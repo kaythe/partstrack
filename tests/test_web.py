@@ -164,6 +164,13 @@ class WebTest(unittest.TestCase):
         self.assertNotIn("data-theme", self.client.get("/").get_data(as_text=True))
         self.assertEqual(self.client.get("/import").status_code, 302)
 
+    def test_about_page(self):
+        from partstrack import __version__
+        page = self.client.get("/about").get_data(as_text=True)
+        self.assertIn(f"<dd>{__version__}</dd>", page)
+        self.assertIn('href="https://github.com/kaythe/partstrack"', page)
+        self.assertIn('href="/about" aria-current="page"', page)
+
     def test_missing_part_is_404(self):
         self.assertEqual(self.client.get("/parts/42").status_code, 404)
 

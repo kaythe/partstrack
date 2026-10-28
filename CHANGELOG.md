@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- About page in the web interface with the version number and links to the
+  GitHub repository, changelog and issue tracker.
+
+### Changed
+
+- The version number is defined only in `partstrack/__init__.py`; the package
+  metadata reads it from there and now includes repository and changelog
+  links.
+
 ## [0.1.0] - 2026-10-28
 
 First release.

@@ -120,7 +120,7 @@ It covers the same features as the CLI: searching and filtering, adding and
 editing parts, taking, adding and moving stock, uploading pictures and
 datasheets (pictures are shown on the part's page), the location tree, and CSV
 import/export. The header has a switch for light mode, dark mode, or following
-the device's setting. The CLI and the web interface can be used on the same database
+the device's setting, and an About page shows the version. The CLI and the web interface can be used on the same database
 at the same time.
 
 **There is no login.** Anyone who can reach the port can view and change the

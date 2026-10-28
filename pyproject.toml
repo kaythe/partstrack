@@ -4,10 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "partstrack"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A small inventory for electronic parts, backed by SQLite"
 readme = "README.md"
 requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/kaythe/partstrack"
+Changelog = "https://github.com/kaythe/partstrack/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 web = ["flask>=3.0", "waitress>=3.0"]
@@ -21,3 +25,6 @@ include = ["partstrack*"]
 
 [tool.setuptools.package-data]
 "partstrack.web" = ["templates/*.html", "static/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "partstrack.__version__"}

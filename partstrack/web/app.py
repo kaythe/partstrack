@@ -37,6 +37,7 @@ from flask import (
 )
 from werkzeug.datastructures import FileStorage
 
+from .. import REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import decode_csv, export_csv, import_csv
 from ..store import (
@@ -489,6 +490,14 @@ def import_():
         return redirect(url_for("ui.transfer"))
     _download_links(inv, result.link_ids)
     return render_template("transfer.html", result=result, dry_run=dry_run, locations=inv.list_locations())
+
+
+# -- about --------------------------------------------------------------------
+
+
+@bp.get("/about")
+def about():
+    return render_template("about.html", version=__version__, repository=REPOSITORY_URL)
 
 
 # -- server -------------------------------------------------------------------

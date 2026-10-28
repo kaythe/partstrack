@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}About{% endblock %}
+{% block content %}
+<h1>About partstrack</h1>
+<p>A small inventory for electronic parts, backed by SQLite.</p>
+<dl class="details">
+  <dt>Version</dt>
+  <dd>{{ version }}</dd>
+  <dt>Source code</dt>
+  <dd><a href="{{ repository }}">{{ repository }}</a></dd>
+  <dt>Changes</dt>
+  <dd><a href="{{ repository }}/blob/main/CHANGELOG.md">Changelog</a></dd>
+  <dt>Bug reports</dt>
+  <dd><a href="{{ repository }}/issues">Issues on GitHub</a></dd>
+</dl>
+{% endblock %}

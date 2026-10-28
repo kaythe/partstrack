@@ -20,7 +20,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[web]'              # web de
 .venv/bin/partstrack-web --db /tmp/x/parts.db --port 8765 --debug        # web dev server with reload
 ```
 
-Without `--db` or `PARTSTRACK_DB`, both front ends use the user's real database at `~/.local/share/partstrack/parts.db`, so always point manual testing at a scratch path. No linter, formatter or pytest is configured. Tests use `unittest` and temporary directories. Plain `python3 -m unittest` skips the web tests when Flask is missing. That only works because `partstrack/web/__init__.py` imports nothing; test discovery imports every package, so keep Flask imports in `app.py`.
+Without `--db` or `PARTSTRACK_DB`, both front ends use the user's real database at `~/.local/share/partstrack/parts.db`, so always point manual testing at a scratch path. The version number lives only in `partstrack/__init__.py` (`pyproject.toml` reads it from there); user-visible changes go into the Unreleased section of `CHANGELOG.md`. No linter, formatter or pytest is configured. Tests use `unittest` and temporary directories. Plain `python3 -m unittest` skips the web tests when Flask is missing. That only works because `partstrack/web/__init__.py` imports nothing; test discovery imports every package, so keep Flask imports in `app.py`.
 
 ## Architecture
 
