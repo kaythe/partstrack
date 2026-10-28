@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ location.path }}{% endblock %}
+{% block content %}
+<h1>Edit {{ location.path }}</h1>
+<form class="stack" method="post">
+  <label>Name <input name="name" value="{{ values.name }}" required autofocus></label>
+  <label>Description <input name="description" value="{{ values.description }}"></label>
+  <label>Inside
+    <input name="parent" value="{{ values.parent }}" list="location-paths" placeholder="Empty for the top level">
+    <small class="muted">Moving a location also moves everything stored in it.</small>
+  </label>
+  <div class="actions">
+    <button class="primary">Save</button>
+    <a href="{{ url_for('ui.locations') }}">Cancel</a>
+  </div>
+</form>
+{% include "_datalists.html" %}
+{% endblock %}

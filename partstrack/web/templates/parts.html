@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Parts{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Parts</h1>
+  <a class="button primary" href="{{ url_for('ui.new_part') }}">Add part</a>
+</div>
+
+<form class="filters" method="get">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Search name, MPN, tags, attributes…" aria-label="Search">
+  <select name="category" aria-label="Category">
+    <option value="">All categories</option>
+    {% for c in categories %}<option {% if c == filters.category %}selected{% endif %}>{{ c }}</option>{% endfor %}
+  </select>
+  <select name="location" aria-label="Location">
+    <option value="">All locations</option>
+    {% for l in locations %}<option value="/{{ l.path }}" {% if '/' ~ l.path == filters.location %}selected{% endif %}>{{ l.path }}</option>{% endfor %}
+  </select>
+  <select name="tag" aria-label="Tag">
+    <option value="">All tags</option>
+    {% for name, count in tags %}<option value="{{ name }}" {% if name == filters.tag %}selected{% endif %}>{{ name }} ({{ count }})</option>{% endfor %}
+  </select>
+  <button>Filter</button>
+  {% if filters.values()|select|list %}<a href="{{ url_for('ui.parts') }}">Clear</a>{% endif %}
+</form>
+
+{% if parts %}
+<div class="table-wrap">
+<table class="list">
+  <thead>
+    <tr><th>Name</th><th class="num">Qty</th><th>Category</th><th>Package</th><th>Location</th><th>Tags</th></tr>
+  </thead>
+  <tbody>
+  {% for p in parts %}
+    <tr>
+      <td>
+        <a href="{{ url_for('ui.part', part_id=p.id) }}">{{ p.name }}</a>
+        {% if p.description %}<div class="muted">{{ p.description }}</div>{% endif %}
+      </td>
+      <td class="num{% if not p.total_quantity %} zero{% endif %}">{{ p.total_quantity }}</td>
+      <td>{{ p.category }}</td>
+      <td>{{ p.package }}</td>
+      <td>{% for s in p.stock %}<div>{{ s.location }} <span class="muted">({{ s.quantity }})</span></div>{% endfor %}</td>
+      <td>{% for t in p.tags %}<a class="tag" href="{{ url_for('ui.parts', tag=t) }}">{{ t }}</a>{% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted">{{ parts|length }} part{{ "" if parts|length == 1 else "s" }}</p>
+{% else %}
+<p class="empty">No parts found.</p>
+{% endif %}
+{% endblock %}

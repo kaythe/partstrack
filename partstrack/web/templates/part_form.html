@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit " ~ part.name if part else "Add part" }}{% endblock %}
+{% block content %}
+<h1>{{ "Edit " ~ part.name if part else "Add part" }}</h1>
+<form class="stack" method="post" enctype="multipart/form-data">
+  <div class="grid">
+    <label>Name <input name="name" value="{{ values.name }}" required autofocus></label>
+    <label>Category <input name="category" value="{{ values.category }}" list="categories"></label>
+    <label>Manufacturer <input name="manufacturer" value="{{ values.manufacturer }}"></label>
+    <label>Manufacturer part number <input name="mpn" value="{{ values.mpn }}"></label>
+    <label>Package <input name="package" value="{{ values.package }}" placeholder="e.g. 0805, SOIC-8, TO-220"></label>
+  </div>
+  <label>Description <input name="description" value="{{ values.description }}"></label>
+  <label>Tags <input name="tags" value="{{ values.tags }}" placeholder="Comma separated, e.g. smd, timer"></label>
+  <label>Attributes
+    <textarea name="attributes" rows="3" placeholder="One per line, e.g. resistance = 10k">{{ values.attributes }}</textarea>
+  </label>
+  <label>Notes <textarea name="notes" rows="3">{{ values.notes }}</textarea></label>
+
+  {% if not part %}
+  <fieldset>
+    <legend>Initial stock</legend>
+    <div class="grid">
+      <label>Quantity <input type="number" name="quantity" min="0" value="{{ values.quantity }}"></label>
+      <label>Location <input name="location" value="{{ values.location }}" list="location-paths" placeholder="e.g. Cabinet A/Drawer 3"></label>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Attachments</legend>
+    <div class="grid">
+      <label>Datasheets <input type="file" name="datasheets" multiple></label>
+      <label>Pictures <input type="file" name="images" accept="image/*" multiple></label>
+    </div>
+    <label>Links <textarea name="links" rows="2" placeholder="One link per line; links to files are downloaded and stored">{{ values.links }}</textarea></label>
+  </fieldset>
+  {% endif %}
+
+  <div class="actions">
+    <button class="primary">Save</button>
+    <a href="{{ url_for('ui.part', part_id=part.id) if part else url_for('ui.parts') }}">Cancel</a>
+  </div>
+</form>
+{% include "_datalists.html" %}
+{% endblock %}

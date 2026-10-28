@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Locations{% endblock %}
+{% block content %}
+<h1>Locations</h1>
+<form class="inline" method="post" action="{{ url_for('ui.add_location') }}">
+  <input name="path" placeholder="New location, e.g. Lab/Cabinet A/Drawer 3" required aria-label="Location path">
+  <input name="description" placeholder="Description (optional)" aria-label="Description">
+  <button class="primary">Add location</button>
+</form>
+
+{% if locations %}
+<div class="table-wrap">
+<table class="list">
+  <thead><tr><th>Location</th><th class="num">Parts</th><th class="num">Items</th><th>Description</th><th></th></tr></thead>
+  <tbody>
+  {% for l in locations %}
+    <tr>
+      <td style="padding-left: {{ 0.5 + 1.5 * l.depth }}rem">
+        <a href="{{ url_for('ui.parts', location='/' ~ l.path) }}">{{ l.name }}</a>
+      </td>
+      <td class="num">{{ l.part_count or "" }}</td>
+      <td class="num">{{ l.total_quantity or "" }}</td>
+      <td>{{ l.description }}</td>
+      <td class="row-actions">
+        <a href="{{ url_for('ui.edit_location', path='/' ~ l.path) }}">Edit</a>
+        {% if not l.part_count %}
+        <form class="inline" method="post" action="{{ url_for('ui.delete_location') }}"
+              onsubmit="return confirm('Delete this location?')">
+          <input type="hidden" name="path" value="/{{ l.path }}">
+          <button class="link danger">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted small">Parts and items count only what is stored directly in a location, not in its sublocations.</p>
+{% else %}
+<p class="empty">No locations yet. They are also created automatically when you add stock.</p>
+{% endif %}
+{% endblock %}

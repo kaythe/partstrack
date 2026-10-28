@@ -1,0 +1,8 @@
+<datalist id="location-paths">
+  {% for l in locations %}<option value="{{ l.path }}">{% endfor %}
+</datalist>
+{% if categories is defined %}
+<datalist id="categories">
+  {% for c in categories %}<option value="{{ c }}">{% endfor %}
+</datalist>
+{% endif %}

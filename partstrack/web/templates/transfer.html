@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Import / export{% endblock %}
+{% block content %}
+<h1>Import / export</h1>
+
+{% if result %}
+<section class="result">
+  <h2>{{ "Preview" if dry_run else "Imported" }}</h2>
+  <p>
+    {{ result.rows }} row(s): {{ result.created|length }} new part(s), {{ result.updated|length }} updated.
+    {% if dry_run %}<strong>Nothing was saved yet.</strong>{% endif %}
+  </p>
+  {% if result.warnings %}
+  <ul class="warnings">{% for w in result.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+  {% endif %}
+</section>
+{% endif %}
+
+<section>
+  <h2>Export</h2>
+  <form class="inline" method="get" action="{{ url_for('ui.export') }}">
+    <select name="delimiter" aria-label="Separator">
+      <option value=",">Comma separated</option>
+      <option value=";">Semicolon separated (German Excel)</option>
+      <option value="&#9;">Tab separated</option>
+    </select>
+    <label class="check"><input type="checkbox" name="bom" value="1"> For Excel</label>
+    <button class="primary">Download CSV</button>
+  </form>
+</section>
+
+<section>
+  <h2>Import</h2>
+  <form class="stack" method="post" action="{{ url_for('ui.import_') }}" enctype="multipart/form-data">
+    <label>CSV file <input type="file" name="file" accept=".csv,text/csv" required></label>
+    <label class="check"><input type="checkbox" name="add_stock"> Add quantities to the existing stock (e.g. for an order) instead of replacing it</label>
+    <label>Location for rows without one <input name="location" list="location-paths" placeholder="e.g. Incoming"></label>
+    <div class="actions">
+      <button name="preview" value="1">Preview</button>
+      <button class="primary">Import</button>
+    </div>
+  </form>
+  <p class="muted small">
+    Parts are matched by name: new ones are created, existing ones updated, and empty cells leave values alone.
+    Only <code>name</code> is required. If any row has an error, nothing is imported.
+    Attachments can only be imported as links here; upload files on the part's page.
+  </p>
+</section>
+{% include "_datalists.html" %}
+{% endblock %}

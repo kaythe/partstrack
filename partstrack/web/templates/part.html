@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}{{ part.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ part.name }}</h1>
+  <div class="actions">
+    <a class="button" href="{{ url_for('ui.edit_part', part_id=part.id) }}">Edit</a>
+    <form method="post" action="{{ url_for('ui.delete_part', part_id=part.id) }}"
+          onsubmit="return confirm('Delete this part and all its attachments?')">
+      <button class="danger">Delete</button>
+    </form>
+  </div>
+</div>
+
+{% set images = part.attachments|selectattr("kind", "equalto", "image")|list %}
+{% if images %}
+<div class="gallery">
+  {% for a in images %}
+    <a href="{{ url_for('ui.attachment', attachment_id=a.id) }}" target="_blank" rel="noopener">
+      <img src="{{ a.url or url_for('ui.attachment', attachment_id=a.id) }}" alt="{{ a.original_name }}" loading="lazy">
+    </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<dl class="details">
+  {% for label, value in [("Description", part.description), ("Manufacturer", part.manufacturer), ("MPN", part.mpn), ("Package", part.package)] if value %}
+    <dt>{{ label }}</dt><dd>{{ value }}</dd>
+  {% endfor %}
+  {% if part.category %}
+    <dt>Category</dt><dd><a href="{{ url_for('ui.parts', category=part.category) }}">{{ part.category }}</a></dd>
+  {% endif %}
+  {% if part.tags %}
+    <dt>Tags</dt>
+    <dd>{% for t in part.tags %}<a class="tag" href="{{ url_for('ui.parts', tag=t) }}">{{ t }}</a>{% endfor %}</dd>
+  {% endif %}
+  {% for key, value in part.attributes.items() %}
+    <dt>{{ key }}</dt><dd>{{ value }}</dd>
+  {% endfor %}
+</dl>
+{% if part.notes %}<div class="notes">{{ part.notes }}</div>{% endif %}
+
+<section>
+  <h2>Stock <span class="muted">· {{ part.total_quantity }} in total</span></h2>
+  {% if part.stock %}
+  <div class="table-wrap">
+  <table class="list">
+    {% for s in part.stock %}
+    <tr>
+      <td><a href="{{ url_for('ui.parts', location='/' ~ s.location) }}">{{ s.location }}</a></td>
+      <td class="num strong">{{ s.quantity }}</td>
+      <td>
+        <form class="inline" method="post" action="{{ url_for('ui.change_stock', part_id=part.id) }}">
+          <input type="hidden" name="location" value="/{{ s.location }}">
+          <input type="number" name="amount" min="0" value="1" required class="small" aria-label="Amount">
+          <button name="op" value="take">Take</button>
+          <button name="op" value="add">Add</button>
+          <button name="op" value="set">Set to</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">None in stock.</p>
+  {% endif %}
+
+  <form class="inline" method="post" action="{{ url_for('ui.change_stock', part_id=part.id) }}">
+    <input type="number" name="amount" min="1" value="1" required class="small" aria-label="Amount">
+    <span>to</span>
+    <input name="location" list="location-paths" placeholder="Location, e.g. Cabinet A/Drawer 3" required aria-label="Location">
+    <button name="op" value="add">Add stock</button>
+  </form>
+
+  {% if part.stock %}
+  <form class="inline" method="post" action="{{ url_for('ui.move_stock', part_id=part.id) }}">
+    <span>Move</span>
+    <input type="number" name="quantity" min="1" placeholder="all" class="small" aria-label="Quantity to move">
+    <span>from</span>
+    <select name="source" aria-label="From">
+      {% for s in part.stock %}<option value="/{{ s.location }}">{{ s.location }}</option>{% endfor %}
+    </select>
+    <span>to</span>
+    <input name="destination" list="location-paths" required aria-label="To">
+    <button>Move</button>
+  </form>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Attachments</h2>
+  {% if part.attachments %}
+  <ul class="attachments">
+    {% for a in part.attachments %}
+    <li>
+      <span class="kind">{{ a.kind }}</span>
+      <a href="{{ url_for('ui.attachment', attachment_id=a.id) }}" target="_blank" rel="noopener">{{ a.original_name or a.url }}</a>
+      {% if a.url %}<span class="muted">(link)</span>{% endif %}
+      {% if a.source_url %}<span class="muted">(from <a href="{{ a.source_url }}" target="_blank" rel="noopener">original link</a>)</span>{% endif %}
+      {% if a.url and downloadable_name(a.url) %}
+      <form class="inline" method="post" action="{{ url_for('ui.download_attachment', attachment_id=a.id) }}">
+        <button class="link">Store locally</button>
+      </form>
+      {% endif %}
+      <form class="inline" method="post" action="{{ url_for('ui.delete_attachment', attachment_id=a.id) }}"
+            onsubmit="return confirm('Remove this attachment?')">
+        <button class="link danger">Remove</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <details>
+    <summary>Add attachments</summary>
+    <form class="stack" method="post" enctype="multipart/form-data" action="{{ url_for('ui.add_attachments', part_id=part.id) }}">
+      <label>Files <input type="file" name="files" multiple></label>
+      <label>Links <textarea name="links" rows="2" placeholder="One link per line; links to files are downloaded and stored"></textarea></label>
+      <label>Kind
+        <select name="kind">
+          <option value="">Guess from the file type</option>
+          {% for k in kinds %}<option>{{ k }}</option>{% endfor %}
+        </select>
+      </label>
+      <div><button class="primary">Attach</button></div>
+    </form>
+  </details>
+</section>
+
+<p class="muted small">Added {{ part.created_at }}, updated {{ part.updated_at }} (UTC)</p>
+{% include "_datalists.html" %}
+{% endblock %}

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "partstrack"
+version = "0.1.0"
+description = "A small inventory for electronic parts, backed by SQLite"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+web = ["flask>=3.0", "waitress>=3.0"]
+
+[project.scripts]
+partstrack = "partstrack.cli:main"
+partstrack-web = "partstrack.web.app:main"
+
+[tool.setuptools]
+packages = ["partstrack", "partstrack.web"]
+
+[tool.setuptools.package-data]
+"partstrack.web" = ["templates/*.html", "static/*"]
