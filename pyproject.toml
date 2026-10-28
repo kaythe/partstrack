@@ -16,8 +16,8 @@ web = ["flask>=3.0", "waitress>=3.0"]
 partstrack = "partstrack.cli:main"
 partstrack-web = "partstrack.web.app:main"
 
-[tool.setuptools]
-packages = ["partstrack", "partstrack.web"]
+[tool.setuptools.packages.find]
+include = ["partstrack*"]
 
 [tool.setuptools.package-data]
 "partstrack.web" = ["templates/*.html", "static/*"]
