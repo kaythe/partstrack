@@ -1,5 +1,7 @@
 # partstrack
 
+![Tests](https://github.com/kaythe/partstrack/actions/workflows/tests.yml/badge.svg)
+
 A small inventory for electronic parts, backed by SQLite. It records what you
 have, how many, where they are stored (in nested locations), and attributes
 such as datasheets, pictures, tags and free-form key/value attributes. Parts can
