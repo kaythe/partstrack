@@ -125,6 +125,34 @@ class DesktopTest(unittest.TestCase):
             part = inv.get_part(part_id)
         self.assertEqual((part.name, part.tags, part.attributes), ("NE555P", [], {}))
 
+    def test_tag_suggestions(self):
+        with self.inventory() as inv:
+            part_id = inv.add_part("NE555")
+            inv.set_tags(part_id, ["SMD", "smd-led", "timer", "tht"])
+        edit = desktop.PartDialog(self.window.inv, None, self.window).tags
+
+        def suggest(text, cursor=None):
+            edit.setText(text)
+            edit.setCursorPosition(len(text) if cursor is None else cursor)
+            edit._suggest()
+            model = edit.suggestions.completionModel()
+            return [model.index(i, 0).data() for i in range(model.rowCount())]
+
+        self.assertEqual(suggest("sm"), ["SMD", "smd-led"])
+        self.assertEqual(suggest("smd, t"), ["tht", "timer"])
+        self.assertEqual(suggest("timer, t"), ["tht"])  # already used tags aren't offered
+        self.assertEqual(suggest("tim, smd", cursor=2), ["timer"])  # the tag at the cursor
+        self.assertEqual(suggest("smd, "), [])
+        self.assertEqual(suggest("xyz"), [])
+
+        edit.setText("smd, ti")
+        edit.insert_tag("timer")
+        self.assertEqual((edit.text(), edit.cursorPosition()), ("smd, timer, ", 12))
+        edit.setText("ti, smd")
+        edit.setCursorPosition(2)
+        edit.insert_tag("timer")
+        self.assertEqual((edit.text(), edit.cursorPosition()), ("timer, smd", 7))
+
     def test_filters_and_selection(self):
         with self.inventory() as inv:
             for name, tag, location in [("NE555", "timer", "Lab/Drawer 1"), ("LM358", "opamp", "Lab/Drawer 2"),

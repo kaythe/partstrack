@@ -11,7 +11,8 @@
     <label>Package <input name="package" value="{{ values.package }}" placeholder="e.g. 0805, SOIC-8, TO-220"></label>
   </div>
   <label>Description <input name="description" value="{{ values.description }}"></label>
-  <label>Tags <input name="tags" value="{{ values.tags }}" placeholder="Comma separated, e.g. smd, timer"></label>
+  <label>Tags <input name="tags" value="{{ values.tags }}" placeholder="Comma separated, e.g. smd, timer"
+                   data-tags='{{ tags|tojson }}'></label>
   <label>Attributes
     <textarea name="attributes" rows="3" placeholder="One per line, e.g. resistance = 10k">{{ values.attributes }}</textarea>
   </label>
@@ -41,4 +42,5 @@
   </div>
 </form>
 {% include "_datalists.html" %}
+<script src="{{ url_for('static', filename='tags.js') }}" defer></script>
 {% endblock %}

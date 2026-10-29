@@ -122,7 +122,7 @@ python3 -m venv .venv
 It covers the same features as the CLI: searching and filtering, adding and
 editing parts, taking, adding and moving stock, uploading pictures and
 datasheets (pictures are shown on the part's page), the location tree, and CSV
-import/export. The header has a switch for light mode, dark mode, or following
+import/export. While you type tags, existing tags are suggested. The header has a switch for light mode, dark mode, or following
 the device's setting, and an About page shows the version. The CLI and the web interface can be used on the same database
 at the same time.
 

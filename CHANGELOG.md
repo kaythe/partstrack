@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
 ### Added
 
 - Desktop app for Windows and Linux (`partstrack-desktop`, optional `desktop`
   extra with PySide6). It covers searching and filtering, adding and editing
-  parts, stock changes and moves, attachments with picture previews, storing
-  links locally, the location tree, CSV import/export with a preview, and a
-  light/dark theme.
+  parts (with suggestions of existing tags), stock changes and moves,
+  attachments with picture previews, storing links locally, the location tree,
+  CSV import/export with a preview, and a light/dark theme.
+- Suggestions of existing tags while typing tags in the web interface.
 - About page in the web interface with the version number and links to the
   GitHub repository, changelog and issue tracker.
 
@@ -58,5 +61,6 @@ First release.
 - Light/dark theme switch in the web interface, with an "Auto" setting that
   follows the device.
 
-[Unreleased]: https://github.com/kaythe/partstrack/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kaythe/partstrack/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kaythe/partstrack/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kaythe/partstrack/releases/tag/v0.1.0

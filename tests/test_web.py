@@ -104,6 +104,14 @@ class WebTest(unittest.TestCase):
             part = inv.get_part(part_id)
         self.assertEqual((part.name, part.tags, part.attributes), ("NE555P", ["timer"], {}))
 
+    def test_tag_suggestions_are_offered(self):
+        self.add_part(tags="timer, it's <b>")
+        page = self.client.get("/parts/new").get_data(as_text=True)
+        self.assertIn("""data-tags='["it\\u0027s \\u003cb\\u003e", "timer"]'""", page)
+        self.assertIn("/static/tags.js", page)
+        with self.client.get("/static/tags.js") as response:
+            self.assertEqual(response.status_code, 200)
+
     def test_locations(self):
         self.client.post("/locations", data={"path": "Lab/Cabinet A", "description": ""})
         self.client.post("/locations/edit?path=/Lab/Cabinet A",

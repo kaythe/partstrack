@@ -213,6 +213,7 @@ def _render_part_form(part: Part | None, values: dict[str, str]):
         values=values,
         locations=inv.list_locations(),
         categories=inv.list_categories(),
+        tags=[name for name, _ in inv.list_tags()],
         kinds=ATTACHMENT_KINDS,
     )
 

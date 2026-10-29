@@ -21,7 +21,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QSettings, QStringListModel, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -77,6 +78,7 @@ from ..store import (
     Part,
     downloadable_name,
     is_url,
+    nocase,
 )
 
 MAX_QUANTITY = 1_000_000_000
@@ -205,6 +207,55 @@ class LocationBox(QComboBox):
         text = self.currentText().strip()
         index = self.findText(text)
         return self.itemData(index) if index >= 0 else text
+
+
+class TagEdit(QLineEdit):
+    """Comma-separated tags. Suggests existing tags for the one being typed,
+    leaving out tags that are already in the field."""
+
+    def __init__(self, known_tags: list[str], text: str = ""):
+        super().__init__(text)
+        self.known_tags = known_tags
+        self.setPlaceholderText("comma-separated, e.g. smd, timer")
+        self.tag_model = QStringListModel(self)
+        self.suggestions = QCompleter(self.tag_model, self)
+        self.suggestions.setWidget(self)  # not setCompleter(), which would replace the whole text
+        self.suggestions.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.suggestions.activated.connect(self.insert_tag)
+        self.textEdited.connect(self._suggest)
+
+    def _current_token(self) -> tuple[int, int]:
+        """Start and end of the tag the cursor is in."""
+        text, cursor = self.text(), self.cursorPosition()
+        start = text.rfind(",", 0, cursor) + 1
+        end = text.find(",", cursor)
+        return start, len(text) if end < 0 else end
+
+    def _suggest(self) -> None:
+        start, end = self._current_token()
+        prefix = self.text()[start:self.cursorPosition()].strip()
+        if not prefix:
+            self.tag_model.setStringList([])
+            self.suggestions.popup().hide()
+            return
+        used = {nocase(t) for t in parse_tags(self.text()[:start] + self.text()[end:])}
+        self.tag_model.setStringList([t for t in self.known_tags if nocase(t) not in used])
+        self.suggestions.setCompletionPrefix(prefix)
+        if self.suggestions.completionCount():
+            self.suggestions.complete()
+        else:
+            self.suggestions.popup().hide()
+
+    def insert_tag(self, tag: str) -> None:
+        """Replace the tag being typed with `tag` and start the next one."""
+        start, end = self._current_token()
+        text = self.text()
+        before = text[:start].rstrip()
+        before = before + " " if before else ""
+        after = text[end + 1:].strip() if end < len(text) else ""
+        new = before + tag + ", "
+        self.setText(new + after)
+        self.setCursorPosition(len(new))
 
 
 class AttributeTable(QTableWidget):
@@ -337,8 +388,7 @@ class PartDialog(SavingDialog):
                 widget = QLineEdit(value)
             self.fields[name] = widget
             form.addRow(FIELD_LABELS[name] + ":", widget)
-        self.tags = QLineEdit(", ".join(part.tags) if part else "")
-        self.tags.setPlaceholderText("comma-separated, e.g. smd, timer")
+        self.tags = TagEdit([name for name, _ in inv.list_tags()], ", ".join(part.tags) if part else "")
         form.addRow("Tags:", self.tags)
         self.attributes = AttributeTable(part.attributes if part else {})
         self.attributes.setMinimumHeight(120)
