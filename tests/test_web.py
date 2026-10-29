@@ -179,6 +179,13 @@ class WebTest(unittest.TestCase):
         self.assertIn('href="https://github.com/kaythe/partstrack"', page)
         self.assertIn('href="/about" aria-current="page"', page)
 
+    def test_logo(self):
+        with self.client.get("/logo.svg") as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, "image/svg+xml")
+            self.assertTrue(response.get_data().startswith(b"<svg"))
+        self.assertIn('rel="icon" href="/logo.svg"', self.client.get("/about").get_data(as_text=True))
+
     def test_missing_part_is_404(self):
         self.assertEqual(self.client.get("/parts/42").status_code, 404)
 

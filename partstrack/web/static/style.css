@@ -76,7 +76,15 @@ nav {
 
 nav a { text-decoration: none; color: var(--muted); }
 nav a[aria-current="page"], nav a:hover { color: var(--text); }
-nav .brand { font-weight: 700; color: var(--text); margin-right: 0.75rem; }
+nav .brand {
+  font-weight: 700;
+  color: var(--text);
+  margin-right: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.about-logo { display: block; margin-top: 1rem; }
 
 .theme-switch {
   margin-left: auto;

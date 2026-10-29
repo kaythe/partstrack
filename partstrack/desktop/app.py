@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QGuiApplication,
+    QIcon,
     QKeySequence,
     QPalette,
     QPixmap,
@@ -65,7 +66,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import REPOSITORY_URL, __version__
+from .. import LOGO_PATH, REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import ImportResult, decode_csv, export_csv, import_csv
 from ..store import (
@@ -626,9 +627,12 @@ class AboutDialog(QDialog):
             f'<a href="{REPOSITORY_URL}/issues">Report a problem</a></p>'
         )
         text.setOpenExternalLinks(True)
+        logo = QLabel()
+        logo.setPixmap(QIcon(str(LOGO_PATH)).pixmap(96))
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
+        layout.addWidget(logo)
         layout.addWidget(text)
         layout.addWidget(QLabel("Database:"))
         layout.addWidget(selectable_label(str(db_path)))
@@ -1279,6 +1283,17 @@ class MainWindow(QMainWindow):
 # -- startup ------------------------------------------------------------------
 
 
+def set_windows_app_id() -> None:
+    """Give the process its own taskbar identity on Windows.
+
+    Otherwise Windows groups the window under the Python interpreter that runs
+    it and shows Python's icon in the taskbar instead of the window icon.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("partstrack.desktop")
+
+
 def apply_theme(key: str) -> None:
     """Ask the platform for a light or dark look. Where it can't do that (some
     Linux desktops), switch to the Fusion style with a palette of our own."""
@@ -1330,10 +1345,12 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"database file (default: $PARTSTRACK_DB, the last one opened, or {default_db_path()})")
     args = parser.parse_args(argv)
 
+    set_windows_app_id()
     app = QApplication(sys.argv[:1])
     app.setOrganizationName("partstrack")
     app.setApplicationName("partstrack")
     app.setApplicationVersion(__version__)
+    app.setWindowIcon(QIcon(str(LOGO_PATH)))
     if app.style().name() == "windowsvista":
         app.setStyle("Fusion")  # the Windows 10 style has no dark mode
     settings = QSettings()

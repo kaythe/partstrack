@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- A map pin with a chip cut out of its head. -->
+  <path fill="#EA580C" fill-rule="evenodd" d="M32 60 C25 50 12 40 12 26 A20 20 0 0 1 52 26 C52 40 39 50 32 60 Z
+    M23 20 A3 3 0 0 1 26 17 V12.5 H28.5 V17 H30.75 V12.5 H33.25 V17 H35.5 V12.5 H38 V17 A3 3 0 0 1 41 20
+    H45.5 V22.5 H41 V24.75 H45.5 V27.25 H41 V29.5 H45.5 V32 H41 A3 3 0 0 1 38 35
+    V39.5 H35.5 V35 H33.25 V39.5 H30.75 V35 H28.5 V39.5 H26 V35 A3 3 0 0 1 23 32
+    H18.5 V29.5 H23 V27.25 H18.5 V24.75 H23 V22.5 H18.5 V20 H23 Z"/>
+  <rect fill="#EA580C" x="28" y="22" width="8" height="8" rx="1.5"/>
+</svg>

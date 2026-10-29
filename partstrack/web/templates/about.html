@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}About{% endblock %}
 {% block content %}
+<img class="about-logo" src="{{ url_for('ui.logo') }}" alt="" width="96" height="96">
 <h1>About partstrack</h1>
 <p>A small inventory for electronic parts, backed by SQLite.</p>
 <dl class="details">

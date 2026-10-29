@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{% endblock %} · partstrack</title>
+  <link rel="icon" href="{{ url_for('ui.logo') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header>
     <nav>
-      <a class="brand" href="{{ url_for('ui.parts') }}">partstrack</a>
+      <a class="brand" href="{{ url_for('ui.parts') }}"><img src="{{ url_for('ui.logo') }}" alt="" width="22" height="22">partstrack</a>
       {% for endpoint, label in [('ui.parts', 'Parts'), ('ui.locations', 'Locations'), ('ui.transfer', 'Import / export'), ('ui.about', 'About')] %}
         <a href="{{ url_for(endpoint) }}" {% if request.endpoint == endpoint %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}

@@ -28,6 +28,7 @@ partstrack-desktop = "partstrack.desktop.app:main"
 include = ["partstrack*"]
 
 [tool.setuptools.package-data]
+"partstrack" = ["logo.svg"]
 "partstrack.web" = ["templates/*.html", "static/*"]
 
 [tool.setuptools.dynamic]

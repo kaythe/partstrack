@@ -45,3 +45,4 @@ jobs:
       - run: pip install build && python -m build
       - run: unzip -l dist/*.whl | grep -q templates/about.html
       - run: unzip -l dist/*.whl | grep -q partstrack/desktop/app.py
+      - run: unzip -l dist/*.whl | grep -q partstrack/logo.svg
