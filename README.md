@@ -1,5 +1,7 @@
 # partstrack
 
+<img src="partstrack/logo.svg" alt="" width="96" align="right">
+
 ![Tests](https://github.com/kaythe/partstrack/actions/workflows/tests.yml/badge.svg)
 
 A small inventory for electronic parts, backed by SQLite. It records what you

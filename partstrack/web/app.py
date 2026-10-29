@@ -37,7 +37,7 @@ from flask import (
 )
 from werkzeug.datastructures import FileStorage
 
-from .. import REPOSITORY_URL, __version__
+from .. import LOGO_PATH, REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import decode_csv, export_csv, import_csv
 from ..store import (
@@ -499,6 +499,11 @@ def import_():
 @bp.get("/about")
 def about():
     return render_template("about.html", version=__version__, repository=REPOSITORY_URL)
+
+
+@bp.get("/logo.svg")
+def logo():
+    return send_file(LOGO_PATH, mimetype="image/svg+xml", max_age=86400)
 
 
 # -- server -------------------------------------------------------------------

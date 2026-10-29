@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backup script and systemd timers in `contrib/systemd/` (user and system
   variants): daily backups of the database and attachments, keeping the
   newest 5.
+- Logo, shown as the web interface's favicon and in its header and About
+  page, and as the desktop app's window and taskbar icon (on Windows too,
+  instead of Python's icon).
 
 ## [0.2.0] - 2026-10-29
 

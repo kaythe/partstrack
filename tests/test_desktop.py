@@ -288,6 +288,7 @@ class DesktopTest(unittest.TestCase):
         self.assertIn(desktop.__version__, texts)
         self.assertIn("https://github.com/kaythe/partstrack", texts)
         self.assertIn(str(self.db), texts)
+        self.assertTrue(any(not label.pixmap().isNull() for label in dialog.findChildren(desktop.QLabel)))
 
 
 if __name__ == "__main__":
