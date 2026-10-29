@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up the partstrack database and attachments
+
+[Service]
+Type=oneshot
+# Change the destination to your backup location.
+ExecStart=%h/.local/bin/partstrack-backup /mnt/backup/partstrack
+Environment=KEEP=5
+# Uncomment if the database isn't in the default location:
+#Environment=PARTSTRACK_DB=/srv/partstrack/parts.db
+Nice=10
+IOSchedulingClass=idle

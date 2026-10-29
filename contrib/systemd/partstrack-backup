@@ -1,0 +1,41 @@
+#!/bin/bash
+# Back up the partstrack database and attachments into DEST as
+# partstrack-<timestamp>.tar.gz, keeping the newest $KEEP backups.
+set -euo pipefail
+
+dest=${1:?usage: partstrack-backup DEST_DIR}
+db=${PARTSTRACK_DB:-$HOME/.local/share/partstrack/parts.db}
+keep=${KEEP:-5}
+data=$(dirname "$db")
+
+[ -f "$db" ] || { echo "no database at $db" >&2; exit 1; }
+mkdir -p "$dest"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# SQLite's backup API gives a consistent copy even while the web server or
+# desktop app is writing; copying the .db file directly might not.
+python3 - "$db" "$work/parts.db" <<'PY'
+import sqlite3, sys
+src, dst = sqlite3.connect(sys.argv[1]), sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+src.close()
+dst.close()
+PY
+
+stamp=$(date +%Y-%m-%d_%H%M%S)
+files=(-C "$work" parts.db)
+[ -d "$data/attachments" ] && files+=(-C "$data" attachments)
+tar -czf "$work/backup.tar.gz" "${files[@]}"
+# Move into place only when complete, so a failed run never counts as a backup.
+mv "$work/backup.tar.gz" "$dest/partstrack-$stamp.tar.gz"
+
+# The timestamps sort chronologically, and so does the glob.
+backups=("$dest"/partstrack-*.tar.gz)
+excess=$(( ${#backups[@]} - keep ))
+if (( excess > 0 )); then
+    rm -- "${backups[@]:0:excess}"
+fi
+echo "backed up to $dest/partstrack-$stamp.tar.gz"

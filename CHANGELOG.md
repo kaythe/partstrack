@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Backup script and systemd timers in `contrib/systemd/` (user and system
+  variants): daily backups of the database and attachments, keeping the
+  newest 5.
+
 ## [0.2.0] - 2026-10-29
 
 ### Added

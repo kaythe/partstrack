@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily partstrack backup
+
+[Timer]
+OnCalendar=daily
+# Catch up on a missed backup if the machine was off at that time.
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

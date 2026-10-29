@@ -170,6 +170,55 @@ The desktop app, the CLI and the web interface can all be used on the same
 database at the same time. The desktop app doesn't notice changes made
 elsewhere until you press F5 (View → Refresh).
 
+## Backups
+
+`contrib/systemd/` contains a backup script and a systemd timer that runs it
+daily. Each run writes `partstrack-<timestamp>.tar.gz` with the database and
+the `attachments/` folder, and keeps the newest 5 backups. The database is
+copied with SQLite's backup API, so this is safe while the web server or the
+desktop app is running.
+
+The script can also be run by hand: `partstrack-backup DEST_DIR`. `KEEP` sets
+the number of backups to keep and `PARTSTRACK_DB` the database to back up.
+
+For your own database, use the user units in `contrib/systemd/user/`:
+
+```sh
+install -m 755 contrib/systemd/partstrack-backup ~/.local/bin/
+cp contrib/systemd/user/partstrack-backup.{service,timer} ~/.config/systemd/user/
+# edit the destination in ~/.config/systemd/user/partstrack-backup.service
+systemctl --user daemon-reload
+systemctl --user enable --now partstrack-backup.timer
+sudo loginctl enable-linger "$USER"     # run even when you're not logged in
+
+systemctl --user start partstrack-backup.service   # back up now
+journalctl --user -u partstrack-backup              # see the output
+```
+
+To restore, close the desktop app and unpack a backup into the database folder:
+`tar -xzf partstrack-<timestamp>.tar.gz -C ~/.local/share/partstrack`.
+
+When the web server runs as a system service under its own user (here
+`partstrack`), use the system units in `contrib/systemd/system/` instead. They
+run the backup as that user. In the service file, set the destination and
+`PARTSTRACK_DB` to the database the web server uses.
+
+```sh
+sudo install -m 755 contrib/systemd/partstrack-backup /usr/local/bin/
+sudo install -d -o partstrack -g partstrack -m 750 /mnt/backup/partstrack
+sudo cp contrib/systemd/system/partstrack-backup.{service,timer} /etc/systemd/system/
+# edit the destination and PARTSTRACK_DB in /etc/systemd/system/partstrack-backup.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now partstrack-backup.timer
+
+sudo systemctl start partstrack-backup.service   # back up now
+journalctl -u partstrack-backup                  # see the output
+```
+
+To restore, stop the web service and unpack as the `partstrack` user, so the
+files keep the right owner:
+`sudo -u partstrack tar -xzf partstrack-<timestamp>.tar.gz -C /var/lib/partstrack`.
+
 ## Layout
 
 - `partstrack/store.py` holds the `Inventory` class with all database logic.

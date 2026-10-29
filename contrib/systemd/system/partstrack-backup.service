@@ -1,0 +1,18 @@
+[Unit]
+Description=Back up the partstrack database and attachments
+# Wait for the backup location if it is a mount (e.g. a network share).
+RequiresMountsFor=/mnt/backup/partstrack
+
+[Service]
+Type=oneshot
+# The user the partstrack web server runs as.
+User=partstrack
+Group=partstrack
+# Change the destination to your backup location.
+ExecStart=/usr/local/bin/partstrack-backup /mnt/backup/partstrack
+Environment=KEEP=5
+# The database the web server uses (its --db or PARTSTRACK_DB). Without this,
+# the default in the partstrack user's home directory is backed up.
+Environment=PARTSTRACK_DB=/var/lib/partstrack/parts.db
+Nice=10
+IOSchedulingClass=idle
