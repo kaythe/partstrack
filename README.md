@@ -13,6 +13,24 @@ The command-line app uses only the Python standard library (Python 3.10+). The
 optional web interface needs Flask and waitress, and the optional desktop app
 needs PySide6 (Qt).
 
+## Screenshots
+
+The [web interface](#web-interface), for use from any browser on your network:
+
+![The parts list in the web interface](docs/screenshots/web-parts.png)
+
+A part's page in dark mode:
+
+<img src="docs/screenshots/web-part-dark.png" alt="A part's page in the web interface, in dark mode" width="600">
+
+The [desktop app](#desktop-app) on Linux:
+
+![The desktop app with a part selected](docs/screenshots/desktop.png)
+
+The [command-line app](#examples):
+
+<img src="docs/screenshots/cli.png" alt="Searching, taking stock and showing a part on the command line" width="724">
+
 ## Install / run
 
 ```sh
