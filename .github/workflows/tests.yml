@@ -16,20 +16,22 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install with the web extra
-        run: pip install '.[web]'
+      - name: Install Qt's system libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1
+      - name: Install with the web and desktop extras
+        run: pip install '.[web,desktop]'
       - name: Run all tests
         run: python -m unittest -v
 
   cli-only:
-    # The CLI must work without any dependencies, so also test without Flask.
+    # The CLI must work without any dependencies, so also test without Flask and PySide6.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
-      - name: Run tests (web tests are skipped)
+      - name: Run tests (web and desktop tests are skipped)
         run: python -m unittest -v
 
   package:
@@ -42,3 +44,4 @@ jobs:
           python-version: "3.x"
       - run: pip install build && python -m build
       - run: unzip -l dist/*.whl | grep -q templates/about.html
+      - run: unzip -l dist/*.whl | grep -q partstrack/desktop/app.py

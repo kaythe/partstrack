@@ -15,12 +15,13 @@ python3 -m unittest tests.test_store.InventoryTest.test_nested_locations  # one 
 python3 -m partstrack --help                                            # run the CLI from source
 PARTSTRACK_DB=/tmp/x/parts.db python3 -m partstrack ...                 # use a scratch database
 
-python3 -m venv .venv && .venv/bin/pip install -e '.[web]'              # web dependencies
-.venv/bin/python -m unittest                                            # all tests incl. tests/test_web.py
+python3 -m venv .venv && .venv/bin/pip install -e '.[web,desktop]'      # web and desktop dependencies
+.venv/bin/python -m unittest                                            # all tests incl. test_web, test_desktop
 .venv/bin/partstrack-web --db /tmp/x/parts.db --port 8765 --debug        # web dev server with reload
+.venv/bin/partstrack-desktop --db /tmp/x/parts.db                        # desktop app
 ```
 
-Without `--db` or `PARTSTRACK_DB`, both front ends use the user's real database at `~/.local/share/partstrack/parts.db`, so always point manual testing at a scratch path. The version number lives only in `partstrack/__init__.py` (`pyproject.toml` reads it from there); user-visible changes go into the Unreleased section of `CHANGELOG.md`. No linter, formatter or pytest is configured. Tests use `unittest` and temporary directories. Plain `python3 -m unittest` skips the web tests when Flask is missing. That only works because `partstrack/web/__init__.py` imports nothing; test discovery imports every package, so keep Flask imports in `app.py`.
+Without `--db` or `PARTSTRACK_DB`, the front ends use the user's real database at `~/.local/share/partstrack/parts.db`, so always point manual testing at a scratch path. The version number lives only in `partstrack/__init__.py` (`pyproject.toml` reads it from there); user-visible changes go into the Unreleased section of `CHANGELOG.md`. No linter, formatter or pytest is configured. Tests use `unittest` and temporary directories. Plain `python3 -m unittest` skips the web and desktop tests when Flask or PySide6 is missing. That only works because `partstrack/web/__init__.py` and `partstrack/desktop/__init__.py` import nothing; test discovery imports every package, so keep Flask and Qt imports in the `app.py` modules.
 
 ## Architecture
 
@@ -30,6 +31,7 @@ There are three layers, and dependencies only point downwards:
 - `partstrack/csvio.py`: CSV import and export, built only on the public `Inventory` API. Its module docstring specifies the format and the import semantics.
 - `partstrack/cli.py`: an argparse front end. Each `cmd_*` function parses input, calls `Inventory` or `csvio`, and formats output. `main()` turns `InventoryError` into `error: …` and exit code 1.
 - `partstrack/web/app.py`: a Flask front end (see "Web interface" below), with Jinja templates in `web/templates/` and CSS in `web/static/`.
+- `partstrack/desktop/app.py`: a Qt (PySide6) front end (see "Desktop app" below).
 
 Logic that more than one front end needs belongs in `store.py` or `csvio.py`, never in a front end.
 
@@ -58,6 +60,15 @@ Logic that more than one front end needs belongs in `store.py` or `csvio.py`, ne
 - **Multi-step form handling** goes inside `inv.transaction()`, so a failure in any step saves nothing. `Inventory.set_tags` and `set_attributes` exist for the edit form's replace-all semantics.
 - **Security.** There is no authentication by design (trusted local network). Keep these protections: Jinja autoescaping (never use `|safe` on stored data); uploaded file names reduced to a bare name by `_safe_filename`; attachments served with `Content-Security-Policy: sandbox` (except PDFs) so uploaded HTML or SVG can't run scripts; and `import_csv(..., allow_files=False)` for uploaded CSVs, so a CSV can't attach arbitrary files from the server.
 - **Performance.** `list_parts()` still runs about 4 queries per part (`get_part` per row, plus a recursive location CTE each time), and the parts page calls it on every load. If large inventories feel slow, replace it with bulk loading: one query per table keyed by `part_id`, and location paths computed once.
-- **Dependencies.** The CLI must stay dependency-free. Web dependencies live only in the `web` extra in `pyproject.toml`. New template or static file types must match the `package-data` patterns there, or they won't be installed.
+- **Dependencies.** The CLI must stay dependency-free. Web and desktop dependencies live only in the `web` and `desktop` extras in `pyproject.toml`. New template or static file types must match the `package-data` patterns there, or they won't be installed.
 
-A future desktop GUI would follow the same rules: one `Inventory` per thread, `InventoryError` shown to the user, ids and `/`-paths as identity, and re-query after writes, since there are no change notifications.
+## Desktop app
+
+`partstrack/desktop/app.py` is a PySide6 app (the `desktop` extra, entry point `partstrack-desktop`, a GUI script so Windows opens no console). It follows the same rules as the web interface, adapted to Qt:
+
+- **Threads.** `MainWindow.inv` is used only by the GUI thread. Downloads run in `Downloader`, a plain `threading.Thread` that opens its own `Inventory` and reports through a Qt signal connected to a `MainWindow` method, so the slot runs in the GUI thread. Never connect a worker's signal to a lambda; it would run in the worker thread.
+- **Refreshing.** There are no change notifications, so every write is followed by `refresh()`, which re-reads the filter combos, the parts table, the location tree and the shown part. `attempt()` runs a write, shows an `InventoryError` and refreshes either way. The part view is rebuilt from scratch on every refresh.
+- **Dialogs** subclass `SavingDialog`: `save()` does the work inside `inv.transaction()`, and `accept()` shows an `InventoryError` and keeps the dialog open with the input. Results the window needs afterwards (new part id, link ids to download) are stored on the dialog only after the transaction commits. Show every dialog and message box with `run_dialog()`, never `exec()` directly: it deletes the dialog afterwards. A dialog left alive as a hidden child of the window makes the interpreter crash on exit (segfault or bus error).
+- **Identity.** `LocationBox` returns known locations as `/`-paths and typed text as it is; table and tree items keep part ids and location paths in `Qt.ItemDataRole.UserRole`.
+- **Theme.** `apply_theme()` asks the platform for a colour scheme and, where the platform ignores the request, falls back to Fusion with `dark_palette()`. The choice is stored in `QSettings`, as are the window geometry, the last database opened and the last folder used.
+- **Tests** (`tests/test_desktop.py`) run with `QT_QPA_PLATFORM=offscreen`, drive dialogs by setting widget values and calling `accept()`, and replace the module functions `show_error` and `confirm` so no message box blocks. Pass a `QSettings` file in the temporary directory to `MainWindow`, so tests never touch the user's settings. For a visual check, `widget.grab().save("x.png")` works offscreen too.

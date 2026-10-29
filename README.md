@@ -8,7 +8,8 @@ such as datasheets, pictures, tags and free-form key/value attributes. Parts can
 be imported from and exported to CSV.
 
 The command-line app uses only the Python standard library (Python 3.10+). The
-optional web interface needs Flask and waitress.
+optional web interface needs Flask and waitress, and the optional desktop app
+needs PySide6 (Qt).
 
 ## Install / run
 
@@ -147,6 +148,28 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+## Desktop app
+
+A native window for Windows and Linux, working directly on the database:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e '.[desktop]'      # Windows: .venv\Scripts\pip install -e .[desktop]
+.venv/bin/partstrack-desktop                 # or: partstrack-desktop --db D:\parts\parts.db
+```
+
+The Parts tab has a searchable, filterable and sortable table, with the
+selected part's details, stock, pictures and attachments next to it.
+Double-click a part to edit it, a stock entry to change it, or an attachment
+to open it. The Locations tab shows the location tree. CSV import shows what a
+file contains before anything is saved. **File → Open database…** switches to
+another database file (or creates one), and the app remembers it. **View →
+Theme** chooses light, dark or the system's setting.
+
+The desktop app, the CLI and the web interface can all be used on the same
+database at the same time. The desktop app doesn't notice changes made
+elsewhere until you press F5 (View → Refresh).
+
 ## Layout
 
 - `partstrack/store.py` holds the `Inventory` class with all database logic.
@@ -159,12 +182,13 @@ WantedBy=multi-user.target
 - `partstrack/cli.py` is the command-line front end, a thin layer over `Inventory`.
 - `partstrack/web/` holds the web front end: a Flask app in `app.py`, plus
   Jinja templates and a stylesheet.
+- `partstrack/desktop/app.py` is the desktop front end (PySide6).
 - Schema changes go into `MIGRATIONS` in `store.py`. They are applied
   automatically using SQLite's `user_version`.
 
 ## Tests
 
 ```sh
-python3 -m unittest -v          # web tests are skipped without Flask
-.venv/bin/python -m unittest -v # everything, with the web extra installed
+python3 -m unittest -v          # web and desktop tests are skipped without Flask / PySide6
+.venv/bin/python -m unittest -v # everything, with the web and desktop extras installed
 ```

@@ -15,10 +15,14 @@ Changelog = "https://github.com/kaythe/partstrack/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 web = ["flask>=3.0", "waitress>=3.0"]
+desktop = ["PySide6-Essentials>=6.8"]
 
 [project.scripts]
 partstrack = "partstrack.cli:main"
 partstrack-web = "partstrack.web.app:main"
+
+[project.gui-scripts]
+partstrack-desktop = "partstrack.desktop.app:main"
 
 [tool.setuptools.packages.find]
 include = ["partstrack*"]

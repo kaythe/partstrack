@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Desktop app for Windows and Linux (`partstrack-desktop`, optional `desktop`
+  extra with PySide6). It covers searching and filtering, adding and editing
+  parts, stock changes and moves, attachments with picture previews, storing
+  links locally, the location tree, CSV import/export with a preview, and a
+  light/dark theme.
 - About page in the web interface with the version number and links to the
   GitHub repository, changelog and issue tracker.
 
