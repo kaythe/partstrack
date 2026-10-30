@@ -1,3 +1,19 @@
+# partstrack - a small inventory for electronic parts
+# Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+#
+#     This program is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This program is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import os
 import tempfile
 import time
@@ -288,6 +304,7 @@ class DesktopTest(unittest.TestCase):
         self.assertIn(desktop.__version__, texts)
         self.assertIn("https://github.com/kaythe/partstrack", texts)
         self.assertIn(str(self.db), texts)
+        self.assertIn("GNU General Public License", texts)
         self.assertTrue(any(not label.pixmap().isNull() for label in dialog.findChildren(desktop.QLabel)))
 
 

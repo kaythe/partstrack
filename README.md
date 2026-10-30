@@ -261,3 +261,13 @@ files keep the right owner:
 python3 -m unittest -v          # web and desktop tests are skipped without Flask / PySide6
 .venv/bin/python -m unittest -v # everything, with the web and desktop extras installed
 ```
+
+## License
+
+Copyright (C) 2026 Kayla Theil
+
+partstrack is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed WITHOUT ANY WARRANTY. See [LICENSE](LICENSE) for the
+full text.

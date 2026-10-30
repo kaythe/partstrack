@@ -1,3 +1,20 @@
+{#
+partstrack - a small inventory for electronic parts
+Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-#}
 {% extends "base.html" %}
 {% block title %}About{% endblock %}
 {% block content %}
@@ -13,5 +30,10 @@
   <dd><a href="{{ repository }}/blob/main/CHANGELOG.md">Changelog</a></dd>
   <dt>Bug reports</dt>
   <dd><a href="{{ repository }}/issues">Issues on GitHub</a></dd>
+  <dt>License</dt>
+  <dd><a href="{{ repository }}/blob/main/LICENSE">GNU General Public License, version 3 or later</a></dd>
 </dl>
+<p class="muted">Copyright © 2026 Kayla Theil. partstrack is free software: you can
+redistribute it and/or modify it under the terms of the GNU GPL. It comes with
+ABSOLUTELY NO WARRANTY.</p>
 {% endblock %}

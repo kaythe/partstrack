@@ -1,3 +1,19 @@
+# partstrack - a small inventory for electronic parts
+# Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+#
+#     This program is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This program is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Desktop application for the parts inventory (Qt for Windows and Linux).
 
 Needs the optional 'desktop' dependency (PySide6):
@@ -625,6 +641,10 @@ class AboutDialog(QDialog):
             f'<p><a href="{REPOSITORY_URL}">{REPOSITORY_URL}</a><br>'
             f'<a href="{REPOSITORY_URL}/blob/main/CHANGELOG.md">Changelog</a> · '
             f'<a href="{REPOSITORY_URL}/issues">Report a problem</a></p>'
+            "<p>Copyright © 2026 Kayla Theil. partstrack is free software: you can<br>"
+            "redistribute it and/or modify it under the terms of the<br>"
+            f'<a href="{REPOSITORY_URL}/blob/main/LICENSE">GNU General Public License, version 3 or later</a>.<br>'
+            "It comes with ABSOLUTELY NO WARRANTY.</p>"
         )
         text.setOpenExternalLinks(True)
         logo = QLabel()

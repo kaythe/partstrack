@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- partstrack is now licensed under the GNU General Public License, version 3
+  or later. The license is included in the packages and named on the About
+  page of the web interface, in the desktop app's About dialog, and in
+  `partstrack --help` and `--version`.
+
 ## [0.3.0] - 2026-10-29
 
 ### Added

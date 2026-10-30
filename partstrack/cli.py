@@ -1,3 +1,19 @@
+# partstrack - a small inventory for electronic parts
+# Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+#
+#     This program is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This program is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Command-line interface for the parts inventory."""
 
 from __future__ import annotations
@@ -311,17 +327,28 @@ def cmd_import(inv: Inventory, args: argparse.Namespace) -> None:
 LINK_HELP = "keep links as links instead of downloading the files they point to"
 
 
+LICENSE_NOTE = """\
+Copyright (C) 2026 Kayla Theil
+License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law."""
+
+
 def build_parser() -> argparse.ArgumentParser:
+    # Raw, so the paragraphs of the epilog and the lines of --version are kept.
     parser = argparse.ArgumentParser(
         prog="partstrack",
         description="Keep track of your electronic parts.",
-        epilog="Parts can be referred to by name or id; use '#ID' to force an id lookup. "
-               "Locations are paths like 'Cabinet A/Drawer 3'; the last part ('Drawer 3') "
-               "is enough if it is unambiguous, and a leading '/' means a full path.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Parts can be referred to by name or id; use '#ID' to force an id lookup.\n"
+               "Locations are paths like 'Cabinet A/Drawer 3'; the last part ('Drawer 3')\n"
+               "is enough if it is unambiguous, and a leading '/' means a full path.\n"
+               "\n"
+               f"{LICENSE_NOTE}",
     )
     parser.add_argument("--db", type=Path, default=None,
                         help=f"database file (default: $PARTSTRACK_DB or {default_db_path()})")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}\n{LICENSE_NOTE}")
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p = sub.add_parser("add", help="add a new part")
