@@ -191,6 +191,26 @@ class WebTest(unittest.TestCase):
         self.assertIn("The QR codes link to http://parts.lan:8080/.", page)
         self.assertNotIn("only works on this computer", page)
 
+    def test_duplicate_part(self):
+        self.add_part(package="DIP-8", min_quantity="5")
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+        self.assertIn(f"/parts/new?copy={part_id}", self.client.get(f"/parts/{part_id}").get_data(as_text=True))
+        form = self.client.get(f"/parts/new?copy={part_id}").get_data(as_text=True)
+        self.assertIn("A copy of", form)
+        for expected in ['value="NE555"', 'value="DIP-8"', 'value="tht, timer"', "vcc = 4.5-16V", 'value="5"']:
+            self.assertIn(expected, form)
+        self.assertNotIn('name="quantity" min="0" value="20"', form)  # no stock
+        self.assertIn(f'<a href="/parts/{part_id}">Cancel</a>', form)
+        self.assertEqual(self.client.get("/parts/new?copy=999").status_code, 404)
+
+        response = self.client.post(f"/parts/new?copy={part_id}", data={"name": "ne555", "package": "SOIC-8"})
+        self.assertIn("already exists", response.get_data(as_text=True))
+        self.assertIn("A copy of", response.get_data(as_text=True))
+        self.add_part(name="NE556")
+        with self.inventory() as inv:
+            self.assertEqual(len(inv.list_parts()), 2)
+
     def test_edit_part_replaces_tags_and_attributes(self):
         self.add_part()
         with self.inventory() as inv:

@@ -313,6 +313,26 @@ class DesktopTest(unittest.TestCase):
         self.addCleanup(again.deleteLater)
         self.assertEqual((again.width(), again.height()), (700, 500))
 
+    def test_duplicate_part(self):
+        with self.inventory() as inv:
+            part_id = inv.add_part("NE555", package="DIP-8")
+            inv.add_tags(part_id, ["timer"])
+            inv.set_min_quantity(part_id, 5)
+            inv.set_stock(part_id, "Box", 10)
+        self.window.current_part_id = part_id
+        self.window.refresh()
+        dialog = desktop.PartDialog(self.window.inv, None, self.window, copy_of=self.window.current_part())
+        self.assertEqual(dialog.windowTitle(), "New part (copy of NE555)")
+        self.assertEqual(dialog.quantity.value(), 0)
+        dialog.accept()  # the name is still taken
+        self.assertIn("already exists", self.errors[-1])
+        dialog.fields["name"].setText("NE556")
+        dialog.accept()
+        with self.inventory() as inv:
+            copy = inv.get_part(dialog.part_id)
+        self.assertEqual((copy.name, copy.package, copy.tags, copy.min_quantity, copy.stock),
+                         ("NE556", "DIP-8", ["timer"], 5, []))
+
     def test_attachments_from_the_part_view(self):
         with serve({"/ds.pdf": (200, "application/pdf", b"%PDF")}) as base:
             with self.inventory() as inv:

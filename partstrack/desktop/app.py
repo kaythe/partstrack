@@ -411,19 +411,26 @@ class SavingDialog(QDialog):
 
 
 class PartDialog(SavingDialog):
-    """Add a part (with stock and attachments) or edit one."""
+    """Add a part (with stock and attachments) or edit one. With `copy_of`, a new
+    part starts with that part's fields, tags, attributes and minimum quantity."""
 
-    def __init__(self, inv: Inventory, part: Part | None, parent: QWidget | None = None):
-        super().__init__(parent, "New part" if part is None else f"Edit {part.name}")
+    def __init__(self, inv: Inventory, part: Part | None, parent: QWidget | None = None, *,
+                 copy_of: Part | None = None):
+        if part is not None:
+            title = f"Edit {part.name}"
+        else:
+            title = f"New part (copy of {copy_of.name})" if copy_of else "New part"
+        super().__init__(parent, title)
         self.inv = inv
         self.part_id = part.id if part else None
+        source = part or copy_of
         self.link_ids: list[int] = []  # links added by save(), to download afterwards
         self.resize(560, 640)
 
         form = QFormLayout()
         self.fields: dict[str, QLineEdit | QComboBox | QPlainTextEdit] = {}
         for name in EDITABLE_FIELDS:
-            value = getattr(part, name) if part else ""
+            value = getattr(source, name) if source else ""
             if name == "category":
                 widget = QComboBox()
                 widget.setEditable(True)
@@ -437,15 +444,15 @@ class PartDialog(SavingDialog):
                 widget = QLineEdit(value)
             self.fields[name] = widget
             form.addRow(FIELD_LABELS[name] + ":", widget)
-        self.tags = TagEdit([name for name, _ in inv.list_tags()], ", ".join(part.tags) if part else "")
+        self.tags = TagEdit([name for name, _ in inv.list_tags()], ", ".join(source.tags) if source else "")
         form.addRow("Tags:", self.tags)
-        self.attributes = AttributeTable(part.attributes if part else {})
+        self.attributes = AttributeTable(source.attributes if source else {})
         self.attributes.setMinimumHeight(120)
         form.addRow("Attributes:", self.attributes)
         self.min_quantity = QSpinBox()
         self.min_quantity.setRange(0, MAX_QUANTITY)
         self.min_quantity.setSpecialValueText("none")
-        self.min_quantity.setValue((part.min_quantity or 0) if part else 0)
+        self.min_quantity.setValue((source.min_quantity or 0) if source else 0)
         self.min_quantity.setToolTip("Less than this in total counts as low stock")
         form.addRow("Minimum quantity:", self.min_quantity)
 
@@ -476,6 +483,7 @@ class PartDialog(SavingDialog):
         layout.addLayout(form)
         layout.addWidget(self.buttons)
         self.fields["name"].setFocus()
+        self.fields["name"].selectAll()  # a copy needs a new name
 
     def _add_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Attach files")
@@ -1075,7 +1083,8 @@ class PartView(QScrollArea):
             layout.addWidget(selectable_label(part.description))
         actions = []
         for text, slot in [("Edit…", self.main.edit_part), ("Stock…", self.main.change_stock),
-                           ("Move…", self.main.move_stock), ("Delete", self.main.delete_part)]:
+                           ("Move…", self.main.move_stock), ("Duplicate…", self.main.duplicate_part),
+                           ("Delete", self.main.delete_part)]:
             button = QPushButton(text)
             button.clicked.connect(lambda checked=False, slot=slot: slot())
             actions.append(button)
@@ -1353,6 +1362,7 @@ class MainWindow(QMainWindow):
             self._action(part_menu, "&Edit…", self.edit_part, "Ctrl+E"),
             self._action(part_menu, "&Stock…", self.change_stock, "Ctrl+T"),
             self._action(part_menu, "&Move…", self.move_stock, "Ctrl+M"),
+            self._action(part_menu, "D&uplicate…", self.duplicate_part, "Ctrl+D"),
             self._action(part_menu, "Attach &files…", self.attach_files),
             self._action(part_menu, "Attach &links…", self.attach_links),
         ]
@@ -1543,6 +1553,16 @@ class MainWindow(QMainWindow):
 
     def new_part(self) -> None:
         dialog = PartDialog(self.inv, None, self)
+        if run_dialog(dialog):
+            self.current_part_id = dialog.part_id
+            self.refresh()
+            self.start_downloads(dialog.link_ids)
+
+    def duplicate_part(self) -> None:
+        part = self.current_part()
+        if part is None:
+            return
+        dialog = PartDialog(self.inv, None, self, copy_of=part)
         if run_dialog(dialog):
             self.current_part_id = dialog.part_id
             self.refresh()

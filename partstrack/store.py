@@ -569,6 +569,19 @@ class Inventory:
         except sqlite3.IntegrityError:
             raise InventoryError(f"a part named '{fields['name']}' already exists") from None
 
+    def duplicate_part(self, part_id: int, new_name: str) -> int:
+        """Add a part named `new_name` with the fields, tags, attributes and minimum
+        quantity of another; returns its id. Stock and attachments are not copied."""
+        with self.transaction():
+            source = self.get_part(part_id)
+            new_id = self.add_part(
+                new_name, **{name: getattr(source, name) for name in EDITABLE_FIELDS if name != "name"}
+            )
+            self.add_tags(new_id, source.tags)
+            self.set_attributes(new_id, source.attributes)
+            self.set_min_quantity(new_id, source.min_quantity)
+        return new_id
+
     def set_min_quantity(self, part_id: int, min_quantity: int | None) -> None:
         """Set the total below which a part counts as low on stock; None removes the threshold."""
         if min_quantity is not None and min_quantity < 0:

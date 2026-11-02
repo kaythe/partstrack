@@ -186,6 +186,12 @@ def cmd_edit(inv: Inventory, args: argparse.Namespace) -> None:
     print_part(inv.get_part(part_id))
 
 
+def cmd_copy(inv: Inventory, args: argparse.Namespace) -> None:
+    source = inv.get_part(inv.find_part(args.part))
+    new_id = inv.duplicate_part(source.id, args.name)
+    print(f"Copied '{source.name}' to part #{new_id} '{inv.get_part(new_id).name}' (without stock and attachments)")
+
+
 def cmd_rm(inv: Inventory, args: argparse.Namespace) -> None:
     part = inv.get_part(inv.find_part(args.part))
     if not args.yes:
@@ -430,6 +436,12 @@ def build_parser() -> argparse.ArgumentParser:
     minimum.add_argument("--min", type=int, metavar="N", help="minimum quantity; less in total counts as low stock")
     minimum.add_argument("--no-min", action="store_true", help="remove the minimum quantity")
     p.set_defaults(func=cmd_edit)
+
+    p = sub.add_parser("copy", aliases=["cp"], help="add a part with the fields, tags and attributes of another",
+                       description="Stock and attachments are not copied.")
+    p.add_argument("part")
+    p.add_argument("name", help="name of the new part")
+    p.set_defaults(func=cmd_copy)
 
     p = sub.add_parser("rm", help="delete a part")
     p.add_argument("part")

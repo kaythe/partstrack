@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with cut lines, A4 sticker sheets and label printers, plus custom sizes and
   a start position for partly used sheets. `partstrack-web --url` sets the
   address in the codes. The `web` and `desktop` extras now include `segno`.
+- Duplicating a part: `partstrack copy NE555 NE556`, the *Duplicate* button
+  on a part's web page, or Part → Duplicate… (Ctrl+D) in the desktop app. The
+  copy gets the fields, tags, attributes and minimum quantity, but no stock
+  or attachments; the web and desktop forms let you change it before saving.
 
 ### Changed
 

@@ -72,5 +72,13 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(self.run_cli("ls", "--low").strip(), "No parts found.")
 
 
+    def test_copy(self):
+        self.run_cli("add", "NE555", "-p", "DIP-8", "-t", "timer", "-q", "5", "-l", "Box")
+        self.assertIn("to part #2 'NE556'", self.run_cli("cp", "NE555", "NE556"))
+        shown = self.run_cli("show", "NE556")
+        self.assertIn("DIP-8", shown)
+        self.assertIn("timer", shown)
+        self.assertIn("Stock (total 0)", shown)
+
 if __name__ == "__main__":
     unittest.main()

@@ -252,6 +252,24 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual((part.tags, part.attributes, [s.location for s in part.stock]),
                          (["smd"], {"value": "1"}, ["Cabinet/Drawer 1"]))
 
+    def test_duplicate_part(self):
+        (self.dir / "ds.pdf").write_bytes(b"%PDF")
+        source = self.inv.add_part("NE555", manufacturer="TI", package="DIP-8", notes="timer")
+        self.inv.add_tags(source, ["timer", "tht"])
+        self.inv.set_attribute(source, "Vcc", "4.5-16V")
+        self.inv.set_min_quantity(source, 5)
+        self.inv.set_stock(source, "Box", 10)
+        self.inv.add_attachment(source, str(self.dir / "ds.pdf"))
+        copy = self.inv.get_part(self.inv.duplicate_part(source, " NE556 "))
+        self.assertEqual(
+            (copy.name, copy.manufacturer, copy.package, copy.notes, copy.tags, copy.attributes, copy.min_quantity),
+            ("NE556", "TI", "DIP-8", "timer", ["tht", "timer"], {"Vcc": "4.5-16V"}, 5),
+        )
+        self.assertEqual((copy.stock, copy.attachments), ([], []))
+        with self.assertRaises(InventoryError):
+            self.inv.duplicate_part(source, "ne555")
+        self.assertEqual(len(self.inv.list_parts()), 2)  # the failed copy left nothing behind
+
     def test_low_stock(self):
         low = self.inv.add_part("NE555")
         empty = self.inv.add_part("LM358")

@@ -63,6 +63,7 @@ partstrack detach 3                       # attachment id from `show`
 partstrack download                       # store all linked files locally
 partstrack download NE555 --dry-run       # ... or one part's; just list them
 partstrack tags
+partstrack copy NE555 NE556                # same fields, tags and attributes; no stock or attachments
 partstrack rm NE555
 ```
 
@@ -231,7 +232,9 @@ The Parts tab has a searchable, filterable and sortable table, with the
 selected part's details, stock, recent stock changes, pictures and attachments
 next to it. "Low stock" shows only the parts below their minimum quantity.
 Double-click a part to edit it, a stock entry to change it, or an attachment
-to open it. The Locations tab shows the location tree. CSV import shows what a
+to open it. **Part → Duplicate…** (Ctrl+D) starts a new part with the selected
+part's fields, tags and attributes; the web interface has a *Duplicate* button
+on each part's page that does the same. The Locations tab shows the location tree. CSV import shows what a
 file contains before anything is saved. **File → Open database…** switches to
 another database file (or creates one), and the app remembers it. **View →
 Theme** chooses light, dark or the system's setting.

@@ -245,11 +245,12 @@ def _form_values(part: Part | None) -> dict[str, str]:
     return values
 
 
-def _render_part_form(part: Part | None, values: dict[str, str]):
+def _render_part_form(part: Part | None, values: dict[str, str], copy_of: Part | None = None):
     inv = inventory()
     return render_template(
         "part_form.html",
         part=part,
+        copy_of=copy_of,
         values=values,
         locations=inv.list_locations(),
         categories=inv.list_categories(),
@@ -289,8 +290,11 @@ def parts():
 @bp.route("/parts/new", methods=["GET", "POST"])
 def new_part():
     inv = inventory()
+    # ?copy=<id> fills the form from another part (see the Duplicate button).
+    copy_id = request.args.get("copy", "")
+    copy_of = inv.get_part(int(copy_id)) if copy_id.isdigit() else None
     if request.method == "GET":
-        return _render_part_form(None, {})
+        return _render_part_form(None, _form_values(copy_of), copy_of)
     try:
         with inv.transaction():
             part_id = inv.add_part(_text("name"), **{f: _text(f) for f in EDITABLE_FIELDS if f != "name"})
@@ -307,7 +311,7 @@ def new_part():
             link_ids = _save_links(inv, part_id, _text("links"), None)
     except InventoryError as e:
         flash(str(e), "error")
-        return _render_part_form(None, request.form)
+        return _render_part_form(None, request.form, copy_of)
     flash(f"Added {_text('name')}.", "success")
     _download_links(inv, link_ids)
     return redirect(url_for("ui.part", part_id=part_id))
