@@ -272,7 +272,8 @@ class WebTest(unittest.TestCase):
 
         for headers in [{"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
                         {"Origin": "http://evil.example"}, {"Origin": "null"}, {"Origin": "http://localhost:3000"},
-                        {"Referer": "http://evil.example/page"}]:
+                        {"Origin": "https://localhost"}, {"Origin": "http://localhost:99999"},
+                        {"Referer": "http://evil.example/page"}, {"Referer": "https://localhost/parts/bulk"}]:
             with self.subTest(headers=headers):
                 response = delete(**headers)
                 self.assertEqual(response.status_code, 403)
@@ -287,7 +288,7 @@ class WebTest(unittest.TestCase):
         self.add_part()
         with self.inventory() as inv:
             part_id = inv.find_part("NE555")
-        self.assertEqual(delete(Origin="http://localhost").status_code, 302)
+        self.assertEqual(delete(Origin="http://LOCALHOST:80").status_code, 302)  # the same origin
         self.add_part()
         with self.inventory() as inv:
             part_id = inv.find_part("NE555")
@@ -299,6 +300,12 @@ class WebTest(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         response = client.post("/theme", data={"theme": "dark"}, headers={"Origin": "http://parts.lan:9999"})
         self.assertEqual(response.status_code, 403)
+        response = client.post("/theme", data={"theme": "dark"}, headers={"Origin": "https://parts.lan:8080"})
+        self.assertEqual(response.status_code, 403)
+        # Behind an HTTPS proxy, --url says which origin the browser sees.
+        client = create_app(self.db, "https://parts.lan").test_client()
+        response = client.post("/theme", data={"theme": "dark"}, headers={"Origin": "https://parts.lan"})
+        self.assertEqual(response.status_code, 302)
 
     def test_edit_part_replaces_tags_and_attributes(self):
         self.add_part()

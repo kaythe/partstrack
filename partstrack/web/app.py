@@ -182,11 +182,21 @@ def _from_this_site() -> bool:
     source = request.headers.get("Origin") or request.headers.get("Referer")
     if source is None:
         return True
-    host = urlparse(source).netloc.lower()  # empty for 'Origin: null'
-    trusted = {request.host.lower()}
-    if current_app.config["PARTSTRACK_URL"]:
-        trusted.add(urlparse(current_app.config["PARTSTRACK_URL"]).netloc.lower())
-    return host in trusted
+    trusted = {_origin(request.host_url), _origin(current_app.config["PARTSTRACK_URL"] or request.host_url)}
+    return _origin(source) in trusted - {None}
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """Scheme, host and port of a URL, the parts that make up an origin; None for
+    anything else (e.g. 'Origin: null'). A missing port is the scheme's default."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:  # not a valid port
+        return None
+    return parsed.scheme, parsed.hostname.lower(), port
 
 
 def action(view: Callable) -> Callable:
@@ -818,7 +828,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--url", default=os.environ.get("PARTSTRACK_URL"),
                         help="address of this site as other devices reach it, e.g. http://parts.lan:8080/, "
-                             "for the QR codes on labels (default: $PARTSTRACK_URL, or the address in each request)")
+                             "for the QR codes on labels and, behind an HTTPS proxy, for accepting changes "
+                             "(default: $PARTSTRACK_URL, or the address in each request)")
     parser.add_argument("--debug", action="store_true", help="use Flask's auto-reloading development server")
     args = parser.parse_args(argv)
 
