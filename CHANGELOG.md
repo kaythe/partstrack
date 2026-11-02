@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Download copy from server… downloads the database and attachments (served
   at `/api/snapshot`) into a folder, and opens them read-only, so no changes
   get made that would be lost. A later download replaces the copy.
+- File → Open backup… in the desktop app opens a backup from the backup
+  script (or a saved snapshot) read-only, to look up an earlier state of the
+  inventory without restoring it.
 
 ### Changed
 

@@ -14,15 +14,15 @@
 #     You should have received a copy of the GNU General Public License
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Read-only copies of a server's inventory, for the desktop app.
+"""Read-only copies of a server's inventory or of a backup, for the desktop app.
 
 The web interface sends a snapshot (GET /api/snapshot): a .tar.gz with
 'parts.db' and the 'attachments' folder, the same layout as the backups of
-contrib/systemd/partstrack-backup. The desktop app downloads it into a folder
-of its own and opens it read-only. A marker file (COPY_INFO) next to the
-database records where and when the copy was taken; a database with that
-marker is always opened read-only, and a later download into the same folder
-replaces the copy.
+contrib/systemd/partstrack-backup. The desktop app unpacks a snapshot or a
+backup into a folder of its own and opens it read-only. A marker file
+(COPY_INFO) next to the database records what it is a copy of and when that
+was taken; a database with that marker is always opened read-only, and
+unpacking into the same folder again replaces the copy.
 """
 
 from __future__ import annotations
@@ -51,10 +51,22 @@ SNAPSHOT_PATH = "api/snapshot"
 DOWNLOAD_TIMEOUT = 60  # seconds without data
 
 
+SERVER, BACKUP = "server", "backup"  # kinds of copies
+
+
 @dataclass(frozen=True)
 class CopyInfo:
-    source: str  # the server's address
-    taken_at: str  # UTC, 'YYYY-MM-DD HH:MM:SS'
+    source: str  # the server's address, or the backup file
+    taken_at: str  # when the snapshot or backup was made: UTC, 'YYYY-MM-DD HH:MM:SS'
+    kind: str = SERVER
+
+    @property
+    def description(self) -> str:
+        """E.g. 'copy of http://parts.lan:8080/ from 2026-11-02 14:30:00 UTC'."""
+        when = self.taken_at + (" UTC" if self.taken_at[:1].isdigit() else "")
+        if self.kind == BACKUP:
+            return f"backup {Path(self.source).name} from {when}"
+        return f"copy of {self.source} from {when}"
 
 
 def write_snapshot(inv: Inventory, target: Path | BinaryIO) -> None:
@@ -101,9 +113,10 @@ def download_snapshot(base_url: str, path: Path, progress: Callable[[int], None]
         raise InventoryError(f"cannot download {url}: {reason}") from None
 
 
-def unpack_copy(archive: Path, folder: Path, *, source: str) -> Path:
-    """Unpack a snapshot into `folder` as a read-only copy of `source`, replacing
-    an earlier copy there; returns the database's path.
+def unpack_copy(archive: Path, folder: Path, *, source: str, kind: str = SERVER) -> Path:
+    """Unpack a snapshot or backup into `folder` as a read-only copy of `source`
+    (a server's address, or with kind=BACKUP the backup file), replacing an
+    earlier copy there; returns the database's path.
 
     `folder` must be empty or hold an earlier copy, so no other database is ever
     overwritten. Only the database and files in 'attachments' are unpacked; the
@@ -115,19 +128,20 @@ def unpack_copy(archive: Path, folder: Path, *, source: str) -> Path:
         raise InventoryError(f"{folder} contains other files; choose an empty folder or one with an earlier copy")
     staging = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX + "new-", dir=folder))
     try:
-        _extract(archive, staging)
-        if not (staging / DATABASE).is_file():
-            raise InventoryError("the download contains no database")
+        made_at = _extract(archive, staging)
+        if made_at is None:
+            raise InventoryError("the archive contains no database")
         try:
             Inventory(staging / DATABASE).close()  # upgrades an older schema; refuses a newer one
         except sqlite3.DatabaseError as e:
-            raise InventoryError(f"the downloaded database is damaged: {e}") from None
+            raise InventoryError(f"the database in the archive is damaged: {e}") from None
         except InventoryError:
             raise InventoryError(
-                "the server runs a newer version of partstrack; update this app to open its inventory"
+                "the database was made by a newer version of partstrack; update this app to open it"
             ) from None
-        taken_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        (staging / COPY_INFO).write_text(json.dumps({"source": source, "taken_at": taken_at}, indent=2) + "\n")
+        taken_at = made_at.strftime("%Y-%m-%d %H:%M:%S")
+        info = {"source": source, "taken_at": taken_at, "kind": kind}
+        (staging / COPY_INFO).write_text(json.dumps(info, indent=2) + "\n")
 
         for name in (DATABASE, DATABASE + "-journal", ATTACHMENTS, COPY_INFO):
             old = folder / name
@@ -142,9 +156,12 @@ def unpack_copy(archive: Path, folder: Path, *, source: str) -> Path:
     return folder / DATABASE
 
 
-def _extract(archive: Path, destination: Path) -> None:
+def _extract(archive: Path, destination: Path) -> datetime | None:
     """Unpack only 'parts.db' and regular files under 'attachments/'. Anything else
-    (absolute paths, '..', links, devices) means the archive isn't one of ours."""
+    (absolute paths, '..', links, devices) means the archive isn't one of ours.
+    Returns the time the database was written (when the snapshot or backup was
+    made), or None if the archive has no database."""
+    made_at = None
     try:
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar:
@@ -157,7 +174,7 @@ def _extract(archive: Path, destination: Path) -> None:
                     and (parts == (DATABASE,) or parts[0] == ATTACHMENTS)
                 )
                 if not allowed or not (member.isfile() or member.isdir()) or (member.isdir() and parts == (DATABASE,)):
-                    raise InventoryError(f"the download contains something unexpected: {member.name}")
+                    raise InventoryError(f"the archive contains something unexpected: {member.name}")
                 target = destination.joinpath(*parts)
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
@@ -165,8 +182,11 @@ def _extract(archive: Path, destination: Path) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with tar.extractfile(member) as data, open(target, "wb") as out:
                     shutil.copyfileobj(data, out)
+                if parts == (DATABASE,):
+                    made_at = datetime.fromtimestamp(member.mtime, timezone.utc)
     except (tarfile.TarError, EOFError, OSError) as e:
-        raise InventoryError(f"the download is not a valid snapshot: {e}") from None
+        raise InventoryError(f"the file is not a valid snapshot or backup: {e}") from None
+    return made_at
 
 
 def open_inventory(db_path: str | Path) -> Inventory:
@@ -183,6 +203,6 @@ def read_copy_info(db_path: Path) -> CopyInfo | None:
         return None
     try:
         data = json.loads(marker.read_text())
-        return CopyInfo(str(data["source"]), str(data["taken_at"]))
+        return CopyInfo(str(data["source"]), str(data["taken_at"]), str(data.get("kind", SERVER)))
     except (OSError, ValueError, KeyError, TypeError):
         return CopyInfo("an unknown server", "an unknown time")

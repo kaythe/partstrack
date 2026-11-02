@@ -415,6 +415,33 @@ class DesktopTest(unittest.TestCase):
         self.assertFalse(self.window.read_only)
         self.assertEqual(sorted(p.name for p in (self.dir / "mine").iterdir()), ["notes.txt"])
 
+    def test_open_backup(self):
+        from partstrack.snapshot import write_snapshot
+
+        with self.inventory() as inv:
+            inv.add_part("NE555")
+            write_snapshot(inv, self.dir / "partstrack-2026-11-01_030000.tar.gz")
+            inv.add_part("LM358")
+            write_snapshot(inv, self.dir / "partstrack-2026-11-02_030000.tar.gz")
+        folder = self.dir / "opened-backup"
+        self.window.settings.setValue("backup/folder", str(folder))
+
+        self.assertTrue(self.window.open_backup(self.dir / "partstrack-2026-11-01_030000.tar.gz"))
+        self.assertEqual(self.window.db_path, folder / "parts.db")
+        self.assertTrue(self.window.read_only)
+        self.assertIn("backup partstrack-2026-11-01_030000.tar.gz from", self.window.windowTitle())
+        self.assertEqual(self.table_names(), ["NE555"])
+
+        self.assertTrue(self.window.open_backup(self.dir / "partstrack-2026-11-02_030000.tar.gz"))  # replaces it
+        self.assertEqual(self.table_names(), ["LM358", "NE555"])
+        self.assertIn("2026-11-02_030000", self.window.copy_label.text())
+
+        (self.dir / "broken.tar.gz").write_bytes(b"nope")
+        self.assertFalse(self.window.open_backup(self.dir / "broken.tar.gz"))
+        self.assertIn("not a valid snapshot or backup", self.errors[-1])
+        self.assertEqual(self.table_names(), ["LM358", "NE555"])  # the open backup is still there
+        self.assertTrue(self.window.read_only)
+
     def test_server_address_is_shared_with_labels(self):
         self.window.settings.setValue("labels/url", "http://old.lan/")  # saved by an older version
         self.assertEqual(desktop.server_url(self.window.settings), "http://old.lan/")

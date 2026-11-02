@@ -22,7 +22,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from partstrack.snapshot import COPY_INFO, download_snapshot, read_copy_info, unpack_copy, write_snapshot
+from partstrack.snapshot import (
+    BACKUP,
+    COPY_INFO,
+    CopyInfo,
+    download_snapshot,
+    read_copy_info,
+    unpack_copy,
+    write_snapshot,
+)
 from partstrack.store import MIGRATIONS, Inventory, InventoryError
 
 from .fileserver import serve
@@ -128,6 +136,34 @@ class SnapshotTest(unittest.TestCase):
         db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
         (db_path.parent / COPY_INFO).write_text("{broken")
         self.assertEqual(read_copy_info(db_path).source, "an unknown server")
+
+    def test_backup_from_the_backup_script(self):
+        # Like contrib/systemd/partstrack-backup: tar -czf ... -C work parts.db -C data attachments
+        database = self.dir / "work" / "parts.db"
+        database.parent.mkdir()
+        copy = sqlite3.connect(database)
+        with copy:
+            self.server.conn.backup(copy)
+        copy.close()
+        backup = self.dir / "partstrack-2026-11-01_030000.tar.gz"
+        with tarfile.open(backup, "w:gz") as tar:
+            info = tar.gettarinfo(database, arcname="parts.db")
+            info.mtime = 1_793_502_000  # 2026-11-01 03:00:00 UTC
+            with open(database, "rb") as data:
+                tar.addfile(info, data)
+            tar.add(self.server.attachments_dir, arcname="attachments")
+        db_path = unpack_copy(backup, self.dir / "opened", source=str(backup), kind=BACKUP)
+        info = read_copy_info(db_path)
+        self.assertEqual((info.kind, info.taken_at), (BACKUP, "2026-11-01 03:00:00"))
+        self.assertEqual(info.description, "backup partstrack-2026-11-01_030000.tar.gz from 2026-11-01 03:00:00 UTC")
+        with Inventory(db_path, read_only=True) as copy:
+            self.assertEqual(copy.get_part(self.part_id).attachments[0].path.read_bytes(), b"%PDF datasheet")
+
+    def test_marker_without_kind_is_a_server_copy(self):
+        db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
+        (db_path.parent / COPY_INFO).write_text(json.dumps({"source": "http://a/", "taken_at": "2026-11-02 08:00:00"}))
+        self.assertEqual(read_copy_info(db_path).description, "copy of http://a/ from 2026-11-02 08:00:00 UTC")
+        self.assertEqual(CopyInfo("x", "an unknown time").description, "copy of x from an unknown time")
 
     def test_download(self):
         data = self.snapshot().read_bytes()

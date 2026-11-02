@@ -98,7 +98,16 @@ from PySide6.QtWidgets import (
 from .. import LOGO_PATH, REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import ImportResult, decode_csv, export_csv, import_csv
-from ..snapshot import TEMP_PREFIX, CopyInfo, download_snapshot, open_inventory, read_copy_info, unpack_copy
+from ..snapshot import (
+    BACKUP,
+    SERVER,
+    TEMP_PREFIX,
+    CopyInfo,
+    download_snapshot,
+    open_inventory,
+    read_copy_info,
+    unpack_copy,
+)
 from ..labels import (
     CUSTOM_LAYOUT_NAMES,
     CUSTOM_PRINTER,
@@ -155,7 +164,7 @@ EXPORT_FORMATS = {
     "Tab-separated (*.tsv)": ("\t", False),
 }
 ROLE_ID = Qt.ItemDataRole.UserRole
-READ_ONLY_MESSAGE = "This is a read-only copy of a server's inventory; it can't be changed."
+READ_ONLY_MESSAGE = "This is a read-only copy (of a server's inventory or a backup); it can't be changed."
 
 
 def server_url(settings: QSettings) -> str:
@@ -1464,6 +1473,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         self._action(file_menu, "&Open database…", self.choose_database, QKeySequence.StandardKey.Open)
         self._action(file_menu, "&Download copy from server…", self.choose_copy_download)
+        self._action(file_menu, "Open &backup…", self.choose_backup)
         file_menu.addSeparator()
         self.import_action = self._action(file_menu, "&Import CSV…", self.choose_import)
         self._action(file_menu, "&Export CSV…", self.choose_export)
@@ -1537,9 +1547,8 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"partstrack – {self.db_path}")
             self.copy_label.clear()
         else:
-            description = f"copy of {copy_info.source} from {copy_info.taken_at} UTC"
-            self.setWindowTitle(f"partstrack – {description} (read-only)")
-            self.copy_label.setText(f"Read-only {description}")
+            self.setWindowTitle(f"partstrack – {copy_info.description} (read-only)")
+            self.copy_label.setText(f"Read-only {copy_info.description}")
         self.refresh()
         return True
 
@@ -1584,24 +1593,52 @@ class MainWindow(QMainWindow):
             if error is not None:
                 show_error(self, error)
                 return
-            target = downloader.folder / "parts.db"
-            replacing_open_copy = self.inv is not None and self.db_path.resolve() == target.resolve()
-            if replacing_open_copy:  # the old copy's files are about to be replaced
-                self.inv.close()
-                self.inv = None
-            try:
-                db_path = unpack_copy(downloader.archive, downloader.folder, source=downloader.url)
-            except (InventoryError, OSError) as e:
-                show_error(self, f"The copy was not saved: {e}")
-                if replacing_open_copy:
-                    self.open_database(target)
-                return
-            self.statusBar().showMessage(f"Saved a copy of {downloader.url} in {downloader.folder}.")
-            if replacing_open_copy or confirm(self, "The copy was saved. Open it now?",
-                                              "It opens read-only. File → Open database… goes back to your own."):
-                self.open_database(db_path)
+            self.unpack_and_open(downloader.archive, downloader.folder, source=downloader.url, kind=SERVER,
+                                 ask="The copy was saved. Open it now?")
         finally:
             downloader.archive.unlink(missing_ok=True)
+
+    def unpack_and_open(self, archive: Path, folder: Path, *, source: str, kind: str, ask: str | None) -> bool:
+        """Unpack a snapshot or backup into `folder` as a read-only copy, replacing the one
+        there, and open it (after asking `ask`, unless it replaces the copy that is open)."""
+        target = folder / "parts.db"
+        replacing_open_copy = self.inv is not None and self.db_path.resolve() == target.resolve()
+        if replacing_open_copy:  # the old copy's files are about to be replaced
+            self.inv.close()
+            self.inv = None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            db_path = unpack_copy(archive, folder, source=source, kind=kind)
+        except (InventoryError, OSError) as e:
+            QApplication.restoreOverrideCursor()
+            show_error(self, f"The copy was not saved: {e}")
+            if replacing_open_copy:
+                self.open_database(target)
+            return False
+        QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(f"Unpacked {Path(source).name if kind == BACKUP else source} into {folder}.")
+        if replacing_open_copy or ask is None or confirm(
+            self, ask, "It opens read-only. File → Open database… goes back to your own."
+        ):
+            return self.open_database(db_path)
+        return True
+
+    def choose_backup(self) -> None:
+        start = self.settings.value("backup/dir", "") or str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "Open backup", start,
+                                              "partstrack backups (*.tar.gz *.tgz);;All files (*)")
+        if path:
+            self.settings.setValue("backup/dir", str(Path(path).parent))
+            self.open_backup(Path(path))
+
+    def open_backup(self, path: Path) -> bool:
+        """Open a backup (from contrib/systemd/partstrack-backup, or a snapshot from
+        /api/snapshot) read-only. It is unpacked into one folder, replaced each time."""
+        if self._copy_downloads:
+            show_error(self, "Please wait until the copy from the server has been downloaded.")
+            return False
+        folder = Path(self.settings.value("backup/folder", "") or default_db_path().parent / "opened-backup")
+        return self.unpack_and_open(path, folder, source=str(path), kind=BACKUP, ask=None)
 
     def choose_database(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

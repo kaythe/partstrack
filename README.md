@@ -311,6 +311,12 @@ overwritten. **File → Open database…** goes back to your own database.
 The server offers the copy at `/api/snapshot`, as a `.tar.gz` with the same
 layout as the backups below.
 
+**File → Open backup…** opens a backup made by the backup script below (or a
+snapshot saved from `/api/snapshot`) the same way: read-only, to look up what
+the inventory was like. It is unpacked into an `opened-backup` folder next to
+the default database, which is replaced by the next backup you open. To restore
+a backup, unpack it as described below.
+
 ## Backups
 
 `contrib/systemd/` contains a backup script and a systemd timer that runs it
@@ -356,7 +362,8 @@ sudo systemctl start partstrack-backup.service   # back up now
 journalctl -u partstrack-backup                  # see the output
 ```
 
-To restore, stop the web service and unpack as the `partstrack` user, so the
+To look at a backup without restoring it, open it in the desktop app with
+**File → Open backup…**. To restore, stop the web service and unpack as the `partstrack` user, so the
 files keep the right owner:
 `sudo -u partstrack tar -xzf partstrack-<timestamp>.tar.gz -C /var/lib/partstrack`.
 
