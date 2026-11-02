@@ -16,9 +16,9 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -#}
 {% extends "base.html" %}
-{% block title %}Not found{% endblock %}
+{% block title %}{{ title or "Not found" }}{% endblock %}
 {% block content %}
-<h1>Not found</h1>
+<h1>{{ title or "Not found" }}</h1>
 <p>{{ message }}</p>
 <p><a href="{{ url_for('ui.parts') }}">Back to the parts list</a></p>
 {% endblock %}

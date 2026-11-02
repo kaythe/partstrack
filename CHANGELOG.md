@@ -35,11 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capacitance=100n`, `vcc:16` or `vcc:` filter on attributes, comparing
   numbers with SI prefixes and units (`4k7`, `100nF`, `3,3V`). This works in
   the CLI, the web interface and the desktop app.
+- Bulk changes in the web interface: tick parts in the parts list (or take
+  all that the current filters show) to add or remove tags, set the category,
+  move all their stock (optionally only from one location) or delete them in
+  one go.
 
 ### Changed
 
 - Listing and searching parts is much faster for large inventories (about
   ten times for 2000 parts), in all front ends and the CSV export.
+
+### Security
+
+- The web interface refuses changes sent from other websites. Before, a
+  website you visited could make your browser post forms to partstrack, for
+  example to delete parts (cross-site request forgery).
 
 ## [1.0.0] - 2026-10-30
 

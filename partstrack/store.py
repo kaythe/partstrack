@@ -681,6 +681,17 @@ class Inventory:
             raise NotFoundError(f"no part with id {part_id}")
         return parts[0]
 
+    def get_parts(self, part_ids: Iterable[int]) -> list[Part]:
+        """Several parts by id, sorted by name; raises NotFoundError if one is missing."""
+        wanted = list(dict.fromkeys(part_ids))
+        if not wanted:
+            return []
+        parts = self._load_parts(f"SELECT id FROM parts WHERE id IN ({', '.join('?' * len(wanted))})", wanted)
+        if len(parts) < len(wanted):
+            missing = sorted(set(wanted) - {p.id for p in parts})
+            raise NotFoundError(f"no part with id {missing[0]}")
+        return parts
+
     def _load_parts(self, ids_sql: str, params: list) -> list[Part]:
         """Load the parts whose ids `ids_sql` (a SELECT of one column) returns, sorted
         by name, with their stock, tags, attributes and attachments. It runs one query
@@ -1018,6 +1029,32 @@ class Inventory:
                 action="move", note=note,
             )
         return quantity
+
+    def move_all_stock(self, part_id: int, destination: str, *, source: str | None = None, note: str = "") -> int:
+        """Move all of a part's stock to `destination`, or only the stock at `source`
+        and its sublocations; returns how many were moved (0 if there was nothing)."""
+        self._require_part(part_id)
+        with self.transaction():
+            entries = self.conn.execute(
+                "SELECT location_id, quantity FROM stock WHERE part_id = ?", (part_id,)
+            ).fetchall()
+            if source is not None:
+                inside = set(self._subtree_ids(self._location_id(source, create=False)))
+                entries = [e for e in entries if e["location_id"] in inside]
+            if not entries:
+                return 0  # and don't create the destination for nothing
+            destination_id = self._location_id(destination, create=True)
+            moved = 0
+            for entry in entries:
+                if entry["location_id"] == destination_id:
+                    continue
+                self._write_stock(part_id, entry["location_id"], 0, action="move", note=note)
+                self._write_stock(
+                    part_id, destination_id, self._read_stock(part_id, destination_id) + entry["quantity"],
+                    action="move", note=note,
+                )
+                moved += entry["quantity"]
+        return moved
 
     def stock_history(
         self, part_id: int | None = None, *, location: str | None = None, limit: int | None = 50

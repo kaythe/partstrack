@@ -1,0 +1,98 @@
+{#
+partstrack - a small inventory for electronic parts
+Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-#}
+{% extends "base.html" %}
+{% block title %}Change parts{% endblock %}
+{% macro selected() %}{% for p in parts %}<input type="hidden" name="part" value="{{ p.id }}">{% endfor %}{% endmacro %}
+{% block content %}
+{% set count = parts|length ~ (" part" if parts|length == 1 else " parts") %}
+<div class="page-head">
+  <h1>Change {{ count }}</h1>
+  {% if parts %}<a class="button" href="{{ url_for('ui.labels', part=parts|map(attribute='id')|list) }}">Labels</a>{% endif %}
+</div>
+
+{% if parts %}
+<div class="table-wrap">
+<table class="list">
+  <thead><tr><th>Name</th><th class="num">Qty</th><th>Category</th><th>Location</th><th>Tags</th></tr></thead>
+  <tbody>
+  {% for p in parts %}
+    <tr>
+      <td><a href="{{ url_for('ui.part', part_id=p.id) }}">{{ p.name }}</a></td>
+      <td class="num">{{ p.total_quantity }}</td>
+      <td>{{ p.category }}</td>
+      <td>{% for s in p.stock %}<div>{{ s.location }} <span class="muted">({{ s.quantity }})</span></div>{% endfor %}</td>
+      <td>{% for t in p.tags %}<span class="tag">{{ t }}</span>{% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<section>
+  <h2>Tags</h2>
+  <form class="inline" method="post" action="{{ url_for('ui.bulk_change') }}">
+    {{ selected() }}
+    <input name="tags" placeholder="Comma separated, e.g. smd, timer" required aria-label="Tags"
+           data-tags='{{ tags|tojson }}'>
+    <button name="op" value="add_tags">Add tags</button>
+    <button name="op" value="remove_tags">Remove tags</button>
+  </form>
+</section>
+
+<section>
+  <h2>Category</h2>
+  <form class="inline" method="post" action="{{ url_for('ui.bulk_change') }}">
+    {{ selected() }}
+    <input name="category" list="categories" placeholder="Empty to clear" aria-label="Category">
+    <button name="op" value="category">Set category</button>
+  </form>
+</section>
+
+<section>
+  <h2>Move stock</h2>
+  <form class="inline" method="post" action="{{ url_for('ui.bulk_change') }}">
+    {{ selected() }}
+    <span>Move all stock from</span>
+    <select name="source" aria-label="From">
+      <option value="">anywhere</option>
+      {% for l in locations %}<option value="/{{ l.path }}">{{ l.path }} (and inside)</option>{% endfor %}
+    </select>
+    <span>to</span>
+    <input name="destination" list="location-paths" required placeholder="Location" aria-label="To">
+    <input name="note" placeholder="Note (optional)" class="note" aria-label="Note">
+    <button name="op" value="move">Move</button>
+  </form>
+</section>
+
+<section>
+  <h2>Delete</h2>
+  <form class="inline" method="post" action="{{ url_for('ui.bulk_change') }}"
+        onsubmit="return confirm('Delete these {{ count }} with their stock and attachments?')">
+    {{ selected() }}
+    <button class="danger" name="op" value="delete">Delete {{ count }}</button>
+    <span class="muted">with their stock, history and attachments. This can't be undone.</span>
+  </form>
+</section>
+{% else %}
+<p class="empty">No parts selected. Tick parts in the <a href="{{ url_for('ui.parts') }}">parts list</a> and
+  choose “Change selected…”.</p>
+{% endif %}
+<p><a href="{{ url_for('ui.parts') }}">Back to the parts list</a></p>
+{% include "_datalists.html" %}
+<script src="{{ url_for('static', filename='tags.js') }}" defer></script>
+{% endblock %}

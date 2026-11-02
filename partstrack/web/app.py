@@ -37,6 +37,7 @@ import tempfile
 from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import (
     Blueprint,
@@ -144,6 +145,44 @@ def set_theme():
 @bp.app_errorhandler(NotFoundError)
 def _not_found(e: NotFoundError):
     return render_template("error.html", message=str(e)), 404
+
+
+# There is no login, so nothing in a request proves that a person meant to send
+# it: any website you visit could make your browser post a form here (cross-site
+# request forgery). Every request that can change something must therefore come
+# from this site's own pages.
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@bp.before_app_request
+def _refuse_cross_site_requests():
+    if request.method in SAFE_METHODS or _from_this_site():
+        return None
+    message = ("This change was sent from another website, so it was refused. "
+               "Make changes from partstrack's own pages.")
+    return render_template("error.html", title="Request refused", message=message), 403
+
+
+def _from_this_site() -> bool:
+    """Whether a browser sent the request from one of our own pages.
+
+    Browsers say where a request comes from in Sec-Fetch-Site; older ones only
+    send Origin, or at least Referer. A request with none of them doesn't come
+    from a browser (e.g. curl or a script), so it can't be a forged one.
+    """
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site is not None:
+        # 'none': typed in or bookmarked. 'same-site' is refused, since it
+        # includes other ports (other services) on the same host.
+        return fetch_site in ("same-origin", "none")
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if source is None:
+        return True
+    host = urlparse(source).netloc.lower()  # empty for 'Origin: null'
+    trusted = {request.host.lower()}
+    if current_app.config["PARTSTRACK_URL"]:
+        trusted.add(urlparse(current_app.config["PARTSTRACK_URL"]).netloc.lower())
+    return host in trusted
 
 
 def action(view: Callable) -> Callable:
@@ -445,6 +484,75 @@ def delete_attachment(attachment_id: int):
     return redirect(url_for("ui.part", part_id=part_id))
 
 
+# -- bulk changes -------------------------------------------------------------
+
+
+@bp.get("/parts/bulk")
+def bulk():
+    """Lists the parts chosen in the parts list, with forms to change them all."""
+    inv = inventory()
+    try:
+        parts = _selected_parts(inv)
+    except NotFoundError:
+        raise
+    except InventoryError as e:  # e.g. an ambiguous location filter
+        flash(str(e), "error")
+        parts = []
+    return render_template(
+        "bulk.html",
+        parts=parts,
+        tags=[name for name, _ in inv.list_tags()],
+        locations=inv.list_locations(),
+        categories=inv.list_categories(),
+    )
+
+
+@bp.post("/parts/bulk")
+@action
+def bulk_change():
+    inv = inventory()
+    parts = inv.get_parts(int(i) for i in request.form.getlist("part") if i.isdigit())
+    if not parts:
+        raise InventoryError("no parts selected")
+    count = f"{len(parts)} part{'' if len(parts) == 1 else 's'}"
+    operation = request.form.get("op")
+    with inv.transaction():
+        match operation:
+            case "add_tags" | "remove_tags":
+                tags = _parse_tags(_text("tags"))
+                if not tags:
+                    raise InventoryError("please enter one or more tags")
+                for part in parts:
+                    if operation == "add_tags":
+                        inv.add_tags(part.id, tags)
+                    else:
+                        inv.remove_tags(part.id, tags)
+                done = f"{'Added' if operation == 'add_tags' else 'Removed'} {', '.join(tags)} for {count}."
+            case "category":
+                for part in parts:
+                    inv.update_part(part.id, category=_text("category"))
+                done = f"Set the category of {count}." if _text("category") else f"Cleared the category of {count}."
+            case "move":
+                if not _text("destination"):
+                    raise InventoryError("please choose where to move the stock")
+                moved = sum(
+                    inv.move_all_stock(part.id, _text("destination"), source=_text("source") or None,
+                                       note=_text("note"))
+                    for part in parts
+                )
+                done = f"Moved {moved} item{'' if moved == 1 else 's'}."
+            case "delete":
+                for part in parts:
+                    inv.delete_part(part.id)
+                done = f"Deleted {count}."
+            case _:
+                abort(400)
+    flash(done, "success")
+    if operation == "delete":
+        return redirect(url_for("ui.parts"))
+    return redirect(url_for("ui.bulk", part=[p.id for p in parts]))
+
+
 # -- history ------------------------------------------------------------------
 
 
@@ -547,14 +655,17 @@ def _selected_for_labels(inv: Inventory) -> tuple[list[Location], list[Part]]:
     else:
         paths = [inv.location_path(ref) for ref in request.args.getlist("location") if ref.strip()]
     locations = select_locations(all_locations, paths, sublocations=bool(request.args.get("sublocations")))
+    return locations, _selected_parts(inv)
+
+
+def _selected_parts(inv: Inventory) -> list[Part]:
+    """The parts chosen in the parts list: ticked ('part' ids), or all that its
+    filters show ('shown', with the filters as 'filter_<name>')."""
     if request.args.get("shown"):
         filters = {name: request.args.get("filter_" + name, "").strip() for name in PART_FILTERS}
-        parts = inv.list_parts(filters["q"], tag=filters["tag"] or None, location=filters["location"] or None,
-                               category=filters["category"] or None, low=bool(filters["low"]))
-    else:
-        part_ids = dict.fromkeys(int(i) for i in request.args.getlist("part") if i.isdigit())
-        parts = [inv.get_part(part_id) for part_id in part_ids]
-    return locations, parts
+        return inv.list_parts(filters["q"], tag=filters["tag"] or None, location=filters["location"] or None,
+                              category=filters["category"] or None, low=bool(filters["low"]))
+    return inv.get_parts(int(i) for i in request.args.getlist("part") if i.isdigit())
 
 
 def _label_options_cookie() -> dict[str, str]:

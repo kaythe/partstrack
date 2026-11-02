@@ -307,6 +307,30 @@ class InventoryTest(unittest.TestCase):
             with self.subTest(query=query), self.assertRaises(InventoryError):
                 self.inv.list_parts(query)
 
+    def test_get_parts(self):
+        b, a = self.inv.add_part("B"), self.inv.add_part("A")
+        self.assertEqual([p.name for p in self.inv.get_parts([b, a, b])], ["A", "B"])
+        self.assertEqual(self.inv.get_parts([]), [])
+        with self.assertRaises(NotFoundError):
+            self.inv.get_parts([a, 999])
+
+    def test_move_all_stock(self):
+        part_id = self.inv.add_part("NE555")
+        self.inv.set_stock(part_id, "Cabinet/Drawer 1", 5)
+        self.inv.set_stock(part_id, "Cabinet/Drawer 2", 3)
+        self.inv.set_stock(part_id, "Bench", 2)
+        self.assertEqual(self.inv.move_all_stock(part_id, "Box", source="Cabinet", note="tidy"), 8)
+        stock = lambda: {s.location: s.quantity for s in self.inv.get_part(part_id).stock}
+        self.assertEqual(stock(), {"Bench": 2, "Box": 8})
+        self.assertEqual(self.inv.move_all_stock(part_id, "Bench"), 8)  # what's already there stays
+        self.assertEqual(stock(), {"Bench": 10})
+        self.assertEqual({c.note for c in self.inv.stock_history(part_id)[:4]}, {"", "tidy"})
+        empty = self.inv.add_part("LM358")
+        self.assertEqual(self.inv.move_all_stock(empty, "Nowhere"), 0)
+        self.assertNotIn("Nowhere", [l.path for l in self.inv.list_locations()])
+        with self.assertRaises(NotFoundError):
+            self.inv.move_all_stock(part_id, "Box", source="Missing")
+
     def test_low_stock(self):
         low = self.inv.add_part("NE555")
         empty = self.inv.add_part("LM358")

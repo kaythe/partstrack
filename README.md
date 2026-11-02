@@ -185,14 +185,19 @@ It covers the same features as the CLI: searching and filtering, adding and
 editing parts, taking, adding and moving stock, uploading pictures and
 datasheets (pictures are shown on the part's page), the location tree, and CSV
 import/export. Parts can have a minimum quantity; the parts list can show
-only the parts below it, and a History page lists all stock changes. While you type tags, existing tags are suggested. The header has a switch for light mode, dark mode, or following
+only the parts below it, and a History page lists all stock changes. To change
+several parts at once, tick them in the parts list (or use *Change all shown*
+for everything the current search and filters show) and choose *Change
+selected…*: add or remove tags, set the category, move all their stock (or only
+what is in one location) to another location, or delete them. While you type tags, existing tags are suggested. The header has a switch for light mode, dark mode, or following
 the device's setting, and an About page shows the version. The CLI and the web interface can be used on the same database
 at the same time.
 
 **There is no login.** Anyone who can reach the port can view and change the
 inventory, so only run it on a network you trust. For the same reason, CSV
 imports through the browser only accept links as attachments, never file paths
-on the server.
+on the server. Changes are only accepted from partstrack's own pages, so other
+websites you visit can't make your browser change the inventory.
 
 To run it as a service with systemd, use a unit like this (adjust user and
 paths):
