@@ -1,0 +1,41 @@
+{#
+partstrack - a small inventory for electronic parts
+Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-#}
+{# Stock changes in `changes`; the part column is left out when `part` is set. -#}
+<div class="table-wrap">
+<table class="list">
+  <thead>
+    <tr>
+      <th>Time (UTC)</th>{% if not part %}<th>Part</th>{% endif %}<th>Location</th>
+      <th class="num">Change</th><th class="num">Now</th><th>Action</th><th>Note</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for c in changes %}
+    <tr>
+      <td class="nowrap">{{ c.at }}</td>
+      {% if not part %}<td><a href="{{ url_for('ui.part', part_id=c.part_id) }}">{{ c.part_name }}</a></td>{% endif %}
+      <td>{{ c.location }}</td>
+      <td class="num{% if c.delta < 0 %} zero{% endif %}">{{ "%+d"|format(c.delta) }}</td>
+      <td class="num">{{ c.quantity }}</td>
+      <td class="muted">{{ c.action }}</td>
+      <td>{{ c.note }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>

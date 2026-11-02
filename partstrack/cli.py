@@ -26,7 +26,7 @@ from pathlib import Path
 
 from . import __version__
 from .csvio import decode_csv, export_csv, import_csv
-from .store import ATTACHMENT_KINDS, EDITABLE_FIELDS, Inventory, InventoryError, Part
+from .store import ATTACHMENT_KINDS, EDITABLE_FIELDS, NEW_PART_NOTE, Inventory, InventoryError, Part
 
 
 def default_db_path() -> Path:
@@ -64,7 +64,10 @@ def print_part(part: Part) -> None:
         print("  Attributes:")
         for key, value in part.attributes.items():
             print(f"    {key}: {value}")
-    print(f"  Stock (total {part.total_quantity}):")
+    minimum = ""
+    if part.min_quantity is not None:
+        minimum = f", minimum {part.min_quantity}" + (", LOW" if part.is_low else "")
+    print(f"  Stock (total {part.total_quantity}{minimum}):")
     for entry in part.stock:
         print(f"    {entry.location}: {entry.quantity}")
     if part.attachments:
@@ -77,6 +80,11 @@ def print_part(part: Part) -> None:
         for line in part.notes.splitlines():
             print(f"    {line}")
     print(f"  Added {part.created_at}, updated {part.updated_at} (UTC)")
+
+
+def format_quantity(part: Part) -> str:
+    """The total quantity, with the minimum when stock is low (e.g. '3 (min 10)')."""
+    return f"{part.total_quantity} (min {part.min_quantity})" if part.is_low else str(part.total_quantity)
 
 
 def report_downloads(results) -> int:
@@ -119,8 +127,10 @@ def cmd_add(inv: Inventory, args: argparse.Namespace) -> None:
             inv.add_tags(part_id, args.tag)
         for key, value in attributes:
             inv.set_attribute(part_id, key, value)
+        if args.min is not None:
+            inv.set_min_quantity(part_id, args.min)
         if args.qty:
-            inv.set_stock(part_id, args.location, args.qty)
+            inv.set_stock(part_id, args.location, args.qty, note=NEW_PART_NOTE)
         attachment_ids = [inv.add_attachment(part_id, source, "datasheet") for source in args.datasheet]
         attachment_ids += [inv.add_attachment(part_id, source, "image") for source in args.image]
         attachment_ids += [inv.add_attachment(part_id, source) for source in args.attach]
@@ -131,7 +141,7 @@ def cmd_add(inv: Inventory, args: argparse.Namespace) -> None:
 
 def cmd_list(inv: Inventory, args: argparse.Namespace) -> None:
     parts = inv.list_parts(
-        " ".join(args.query), tag=args.tag, location=args.location, category=args.category
+        " ".join(args.query), tag=args.tag, location=args.location, category=args.category, low=args.low
     )
     if not parts:
         print("No parts found.")
@@ -142,7 +152,7 @@ def cmd_list(inv: Inventory, args: argparse.Namespace) -> None:
             [
                 p.id,
                 p.name,
-                p.total_quantity,
+                format_quantity(p),
                 p.category,
                 p.package,
                 ", ".join(f"{s.location} ({s.quantity})" for s in p.stock),
@@ -171,6 +181,8 @@ def cmd_edit(inv: Inventory, args: argparse.Namespace) -> None:
             inv.set_attribute(part_id, key, value)
         for key in args.unattr:
             inv.remove_attribute(part_id, key)
+        if args.min is not None or args.no_min:
+            inv.set_min_quantity(part_id, args.min)
     print_part(inv.get_part(part_id))
 
 
@@ -194,21 +206,34 @@ def cmd_stock(inv: Inventory, args: argparse.Namespace) -> None:
         raise InventoryError(f"amount must be +N, -N or N, got '{amount}'") from None
     with inv.transaction():
         if amount.startswith(("+", "-")):
-            new = inv.adjust_stock(part_id, args.location, number)
+            new = inv.adjust_stock(part_id, args.location, number, note=args.note)
         else:
-            inv.set_stock(part_id, args.location, number)
+            inv.set_stock(part_id, args.location, number, note=args.note)
             new = number
         location = inv.location_path(args.location) if new else args.location
     part = inv.get_part(part_id)
-    print(f"{part.name}: {new} in '{location}', {part.total_quantity} total")
+    low = f" (below the minimum of {part.min_quantity})" if part.is_low else ""
+    print(f"{part.name}: {new} in '{location}', {part.total_quantity} total{low}")
 
 
 def cmd_move(inv: Inventory, args: argparse.Namespace) -> None:
     part_id = inv.find_part(args.part)
     with inv.transaction():
-        moved = inv.move_stock(part_id, args.source, args.destination, args.qty)
+        moved = inv.move_stock(part_id, args.source, args.destination, args.qty, note=args.note)
         destination = inv.location_path(args.destination)
     print(f"Moved {moved} from '{args.source}' to '{destination}'")
+
+
+def cmd_history(inv: Inventory, args: argparse.Namespace) -> None:
+    part_id = inv.find_part(args.part) if args.part else None
+    changes = inv.stock_history(part_id, location=args.location, limit=args.limit or None)
+    if not changes:
+        print("No stock changes found.")
+        return
+    print_table(
+        ["Time (UTC)", "Part", "Location", "Change", "Now", "Action", "Note"],
+        [[c.at, c.part_name, c.location, f"{c.delta:+d}", c.quantity, c.action, c.note] for c in reversed(changes)],
+    )
 
 
 def cmd_attach(inv: Inventory, args: argparse.Namespace) -> None:
@@ -310,6 +335,7 @@ def cmd_import(inv: Inventory, args: argparse.Namespace) -> None:
         default_location=args.location,
         delimiter=args.delimiter,
         dry_run=args.dry_run,
+        note=f"CSV import: {args.file.name}",
     )
     for warning in result.warnings:
         print(f"warning: {warning}", file=sys.stderr)
@@ -361,6 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", "--notes", default="")
     p.add_argument("-q", "--qty", type=int, default=0, help="initial quantity (needs --location)")
     p.add_argument("-l", "--location", help="where the initial quantity is stored")
+    p.add_argument("--min", type=int, metavar="N", help="minimum quantity; less in total counts as low stock")
     p.add_argument("-t", "--tag", action="append", default=[], help="tag (repeatable)")
     p.add_argument("-a", "--attr", action="append", default=[], metavar="KEY=VALUE",
                    help="custom attribute, e.g. resistance=10k (repeatable)")
@@ -378,6 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-t", "--tag", help="only parts with this tag")
     p.add_argument("-l", "--location", help="only parts stored at this location or inside it")
     p.add_argument("-c", "--category", help="only parts in this category")
+    p.add_argument("--low", action="store_true", help="only parts below their minimum quantity")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("show", help="show all details of a part")
@@ -398,6 +426,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-a", "--attr", action="append", default=[], metavar="KEY=VALUE",
                    help="set attribute (repeatable)")
     p.add_argument("--unattr", action="append", default=[], metavar="KEY", help="remove attribute (repeatable)")
+    minimum = p.add_mutually_exclusive_group()
+    minimum.add_argument("--min", type=int, metavar="N", help="minimum quantity; less in total counts as low stock")
+    minimum.add_argument("--no-min", action="store_true", help="remove the minimum quantity")
     p.set_defaults(func=cmd_edit)
 
     p = sub.add_parser("rm", help="delete a part")
@@ -411,6 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("part")
     p.add_argument("location")
     p.add_argument("amount")
+    p.add_argument("-m", "--note", default="", help="note for the stock history, e.g. what the parts were used for")
     p.set_defaults(func=cmd_stock)
 
     p = sub.add_parser("move", help="move a part from one location to another")
@@ -418,7 +450,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("source")
     p.add_argument("destination")
     p.add_argument("qty", type=int, nargs="?", help="how many (default: all)")
+    p.add_argument("-m", "--note", default="", help="note for the stock history")
     p.set_defaults(func=cmd_move)
+
+    p = sub.add_parser("history", help="show the history of stock changes")
+    p.add_argument("part", nargs="?", help="only this part (default: all parts)")
+    p.add_argument("-l", "--location", help="only changes at this location or inside it")
+    p.add_argument("-n", "--limit", type=int, default=50, metavar="N",
+                   help="show the newest N changes (default: 50; 0 for all)")
+    p.set_defaults(func=cmd_history)
 
     p = sub.add_parser("attach", help="attach a datasheet, picture or other file/link")
     p.add_argument("part")
@@ -473,7 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
                        description="Parts are matched by name: new ones are created, existing ones updated. "
                                    "Empty cells leave existing values alone. Quantities replace the stock at "
                                    "the row's location unless --add-stock is given. Columns: "
-                                   "name, description, manufacturer, mpn, category, package, location, quantity, "
+                                   "name, description, manufacturer, mpn, category, package, location, quantity, min_quantity, "
                                    "tags, datasheets, images, other_attachments, notes and attr:<name>; "
                                    "only 'name' is required. Lists within a cell are separated by ';'.")
     p.add_argument("file", type=Path)

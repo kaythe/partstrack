@@ -26,6 +26,8 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
     <label>Manufacturer <input name="manufacturer" value="{{ values.manufacturer }}"></label>
     <label>Manufacturer part number <input name="mpn" value="{{ values.mpn }}"></label>
     <label>Package <input name="package" value="{{ values.package }}" placeholder="e.g. 0805, SOIC-8, TO-220"></label>
+    <label>Minimum quantity <input type="number" name="min_quantity" min="0" value="{{ values.min_quantity }}"
+                                   placeholder="none" title="Less than this in total counts as low stock"></label>
   </div>
   <label>Description <input name="description" value="{{ values.description }}"></label>
   <label>Tags <input name="tags" value="{{ values.tags }}" placeholder="Comma separated, e.g. smd, timer"

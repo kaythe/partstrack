@@ -51,6 +51,7 @@ DOWNLOAD_TIMEOUT = 30  # seconds without data before a download is given up
 MAX_DOWNLOAD_SIZE = 200 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 (compatible; partstrack)"
 LOCATION_SEPARATOR = "/"
+NEW_PART_NOTE = "new part"  # stock history note for the initial stock of a part being added
 
 # Prefix for queries that need the full path of each location.
 LOCATION_PATHS = """
@@ -187,6 +188,35 @@ MIGRATIONS: list[str | Callable[[sqlite3.Connection], None]] = [
     _nest_locations,
     # Where a downloaded attachment came from.
     "ALTER TABLE attachments ADD COLUMN source_url TEXT;",
+    # Low-stock thresholds and the history of stock changes, which starts with
+    # one 'initial' row per existing stock entry.
+    """
+    ALTER TABLE parts ADD COLUMN min_quantity INTEGER CHECK (min_quantity >= 0);
+
+    CREATE TABLE stock_log (
+        id            INTEGER PRIMARY KEY,
+        at            TEXT NOT NULL DEFAULT (datetime('now')),
+        part_id       INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+        location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+        location_path TEXT NOT NULL,  -- at the time of the change; kept if the location goes
+        delta         INTEGER NOT NULL,
+        quantity      INTEGER NOT NULL,  -- at that location afterwards
+        action        TEXT NOT NULL CHECK (action IN ('initial', 'set', 'adjust', 'move')),
+        note          TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX stock_log_part_idx ON stock_log(part_id, id);
+    CREATE INDEX stock_log_location_idx ON stock_log(location_id);
+
+    WITH RECURSIVE paths (id, path) AS (
+        SELECT id, name FROM locations WHERE parent_id IS NULL
+        UNION ALL
+        SELECT l.id, p.path || '/' || l.name FROM locations l JOIN paths p ON l.parent_id = p.id
+    )
+    INSERT INTO stock_log (part_id, location_id, location_path, delta, quantity, action)
+    SELECT s.part_id, s.location_id, p.path, s.quantity, s.quantity, 'initial'
+    FROM stock s JOIN paths p ON p.id = s.location_id
+    ORDER BY s.part_id, p.path;
+    """,
 ]
 
 
@@ -232,6 +262,7 @@ class Part:
     notes: str = ""
     created_at: str = ""
     updated_at: str = ""
+    min_quantity: int | None = None  # below this total, stock is low; None for no threshold
     stock: list[StockEntry] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     attributes: dict[str, str] = field(default_factory=dict)
@@ -240,6 +271,25 @@ class Part:
     @property
     def total_quantity(self) -> int:
         return sum(s.quantity for s in self.stock)
+
+    @property
+    def is_low(self) -> bool:
+        return self.min_quantity is not None and self.total_quantity < self.min_quantity
+
+
+@dataclass
+class StockChange:
+    """One entry of the stock history: a change of a part's quantity at one location."""
+
+    id: int
+    at: str  # UTC, 'YYYY-MM-DD HH:MM:SS'
+    part_id: int
+    part_name: str
+    location: str  # full path at the time of the change
+    delta: int
+    quantity: int  # at that location afterwards
+    action: str  # 'initial', 'set', 'adjust' or 'move'
+    note: str
 
 
 @dataclass
@@ -519,6 +569,17 @@ class Inventory:
         except sqlite3.IntegrityError:
             raise InventoryError(f"a part named '{fields['name']}' already exists") from None
 
+    def set_min_quantity(self, part_id: int, min_quantity: int | None) -> None:
+        """Set the total below which a part counts as low on stock; None removes the threshold."""
+        if min_quantity is not None and min_quantity < 0:
+            raise InventoryError("minimum quantity must not be negative")
+        with self.transaction():
+            self._require_part(part_id)
+            self.conn.execute(
+                "UPDATE parts SET min_quantity = ?, updated_at = datetime('now') WHERE id = ?",
+                (min_quantity, part_id),
+            )
+
     def delete_part(self, part_id: int) -> None:
         with self.transaction():
             self._require_part(part_id)
@@ -594,12 +655,14 @@ class Inventory:
         tag: str | None = None,
         location: str | None = None,
         category: str | None = None,
+        low: bool = False,
     ) -> list[Part]:
         """Return matching parts, sorted by name.
 
         Every word of `query` must appear (case-insensitively) in the part's
         text fields, tags or attribute values. `location` also matches parts
-        stored in its sublocations.
+        stored in its sublocations. `low` keeps only parts whose total stock
+        is below their minimum quantity.
         """
         where, params = [], []
         for word in query.split():
@@ -629,6 +692,11 @@ class Inventory:
         if category:
             where.append("p.category = ? COLLATE NOCASE")
             params.append(category)
+        if low:
+            where.append(
+                "p.min_quantity IS NOT NULL AND"
+                " COALESCE((SELECT SUM(s.quantity) FROM stock s WHERE s.part_id = p.id), 0) < p.min_quantity"
+            )
         sql = "SELECT p.id FROM parts p"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -805,7 +873,10 @@ class Inventory:
 
     # -- stock ---------------------------------------------------------------
 
-    def set_stock(self, part_id: int, location: str, quantity: int) -> None:
+    # Every change is recorded in the stock history (see stock_history), with
+    # an optional note such as "for the amplifier board".
+
+    def set_stock(self, part_id: int, location: str, quantity: int, *, note: str = "") -> None:
         if quantity < 0:
             raise InventoryError("quantity must not be negative")
         self._require_part(part_id)
@@ -816,9 +887,9 @@ class Inventory:
                     return  # nothing stored at a location that doesn't exist
             else:
                 location_id = self._location_id(location, create=True)
-            self._write_stock(part_id, location_id, quantity)
+            self._write_stock(part_id, location_id, quantity, action="set", note=note)
 
-    def adjust_stock(self, part_id: int, location: str, delta: int) -> int:
+    def adjust_stock(self, part_id: int, location: str, delta: int, *, note: str = "") -> int:
         """Add (positive delta) or take (negative delta) parts; returns the new quantity."""
         self._require_part(part_id)
         with self.transaction():
@@ -827,10 +898,12 @@ class Inventory:
             new = current + delta
             if new < 0:
                 raise InventoryError(f"only {current} in '{location}', cannot take {-delta}")
-            self._write_stock(part_id, location_id, new)
+            self._write_stock(part_id, location_id, new, action="adjust", note=note)
         return new
 
-    def move_stock(self, part_id: int, source: str, destination: str, quantity: int | None = None) -> int:
+    def move_stock(
+        self, part_id: int, source: str, destination: str, quantity: int | None = None, *, note: str = ""
+    ) -> int:
         """Move `quantity` (default: all) parts between locations; returns the amount moved."""
         self._require_part(part_id)
         with self.transaction():
@@ -845,9 +918,48 @@ class Inventory:
             destination_id = self._location_id(destination, create=True)
             if destination_id == source_id:
                 raise InventoryError("source and destination are the same location")
-            self._write_stock(part_id, source_id, available - quantity)
-            self._write_stock(part_id, destination_id, self._read_stock(part_id, destination_id) + quantity)
+            self._write_stock(part_id, source_id, available - quantity, action="move", note=note)
+            self._write_stock(
+                part_id, destination_id, self._read_stock(part_id, destination_id) + quantity,
+                action="move", note=note,
+            )
         return quantity
+
+    def stock_history(
+        self, part_id: int | None = None, *, location: str | None = None, limit: int | None = 50
+    ) -> list[StockChange]:
+        """Return stock changes, newest first, optionally only those of one part
+        or at one location (including its sublocations). `limit=None` returns all."""
+        where, params = [], []
+        if part_id is not None:
+            self._require_part(part_id)
+            where.append("l.part_id = ?")
+            params.append(part_id)
+        if location:
+            location_ids = self._subtree_ids(self._location_id(location, create=False))
+            where.append(f"l.location_id IN ({', '.join('?' * len(location_ids))})")
+            params += location_ids
+        sql = "SELECT l.*, p.name AS part_name FROM stock_log l JOIN parts p ON p.id = l.part_id"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY l.id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [
+            StockChange(
+                id=r["id"],
+                at=r["at"],
+                part_id=r["part_id"],
+                part_name=r["part_name"],
+                location=r["location_path"],
+                delta=r["delta"],
+                quantity=r["quantity"],
+                action=r["action"],
+                note=r["note"],
+            )
+            for r in self.conn.execute(sql, params)
+        ]
 
     # -- attachments ---------------------------------------------------------
 
@@ -1048,7 +1160,16 @@ class Inventory:
         ).fetchone()
         return row["quantity"] if row else 0
 
-    def _write_stock(self, part_id: int, location_id: int, quantity: int) -> None:
+    def _write_stock(self, part_id: int, location_id: int, quantity: int, *, action: str, note: str) -> None:
+        """Store a new quantity and record the change in the stock history.
+        Call it inside a transaction, so the change and its record are saved together."""
+        delta = quantity - self._read_stock(part_id, location_id)
+        if delta:
+            self.conn.execute(
+                "INSERT INTO stock_log (part_id, location_id, location_path, delta, quantity, action, note)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (part_id, location_id, self.location_path(location_id), delta, quantity, action, note.strip()),
+            )
         if quantity == 0:
             self.conn.execute(
                 "DELETE FROM stock WHERE part_id = ? AND location_id = ?", (part_id, location_id)

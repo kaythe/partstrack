@@ -323,3 +323,8 @@ ul.attachments a { overflow-wrap: anywhere; }
   dl.details { grid-template-columns: 1fr; }
   dl.details dd { margin-bottom: 0.5rem; }
 }
+
+/* Stock notes and history */
+
+input.note { flex: 1 1 10rem; min-width: 8rem; }
+.nowrap { white-space: nowrap; }

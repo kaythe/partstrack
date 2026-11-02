@@ -58,7 +58,11 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
 {% if part.notes %}<div class="notes">{{ part.notes }}</div>{% endif %}
 
 <section>
-  <h2>Stock <span class="muted">· {{ part.total_quantity }} in total</span></h2>
+  <h2>Stock <span class="muted">· {{ part.total_quantity }} in total</span>
+    {%- if part.min_quantity is not none %}
+      <span class="{{ 'zero' if part.is_low else 'muted' }}">· {{ "below the " if part.is_low }}minimum of {{ part.min_quantity }}</span>
+    {%- endif %}
+  </h2>
   {% if part.stock %}
   <div class="table-wrap">
   <table class="list">
@@ -73,6 +77,7 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
           <button name="op" value="take">Take</button>
           <button name="op" value="add">Add</button>
           <button name="op" value="set">Set to</button>
+          <input name="note" placeholder="Note (optional)" class="note" aria-label="Note">
         </form>
       </td>
     </tr>
@@ -88,6 +93,7 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
     <span>to</span>
     <input name="location" list="location-paths" placeholder="Location, e.g. Cabinet A/Drawer 3" required aria-label="Location">
     <button name="op" value="add">Add stock</button>
+    <input name="note" placeholder="Note (optional)" class="note" aria-label="Note">
   </form>
 
   {% if part.stock %}
@@ -101,9 +107,21 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
     <span>to</span>
     <input name="destination" list="location-paths" required aria-label="To">
     <button>Move</button>
+    <input name="note" placeholder="Note (optional)" class="note" aria-label="Note">
   </form>
   {% endif %}
 </section>
+
+{% if history %}
+<section>
+  <h2>History</h2>
+  {% set changes = history[:history_limit] %}
+  {% include "_history_table.html" %}
+  {% if history|length > history_limit %}
+  <p><a href="{{ url_for('ui.history', part=part.id) }}">Full history</a></p>
+  {% endif %}
+</section>
+{% endif %}
 
 <section>
   <h2>Attachments</h2>

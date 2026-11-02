@@ -217,6 +217,40 @@ class DesktopTest(unittest.TestCase):
             stock = {s.location: s.quantity for s in inv.get_part(part_id).stock}
         self.assertEqual(stock, {"Bench": 2, "Shelf/Box": 5})
 
+    def test_minimum_low_filter_and_history(self):
+        dialog = self.new_part_dialog(name="NE555")
+        dialog.quantity.setValue(4)
+        dialog.location.setEditText("Box")
+        dialog.min_quantity.setValue(5)
+        dialog.accept()
+        with self.inventory() as inv:
+            inv.add_part("LM358")
+        self.window.current_part_id = dialog.part_id
+        self.window.refresh()
+        self.window.low_filter.setChecked(True)
+        self.assertEqual(self.table_names(), ["NE555"])
+
+        part = self.window.current_part()
+        dialog = desktop.StockDialog(self.window.inv, part, self.window, operation="add")
+        dialog.amount.setValue(2)
+        dialog.note.setText("restocked")
+        dialog.accept()
+        self.window.refresh()
+        self.assertEqual(self.table_names(), [])
+        dialog = desktop.MoveDialog(self.window.inv, self.window.inv.get_part(part.id), self.window)
+        dialog.destination.setEditText("Bench")
+        dialog.note.setText("testing")
+        dialog.accept()
+        with self.inventory() as inv:
+            self.assertEqual([c.note for c in inv.stock_history(part.id)], ["testing", "testing", "restocked", "new part"])
+
+        dialog = desktop.PartDialog(self.window.inv, self.window.inv.get_part(part.id), self.window)
+        self.assertEqual(dialog.min_quantity.value(), 5)
+        dialog.min_quantity.setValue(0)  # shown as "none"
+        dialog.accept()
+        with self.inventory() as inv:
+            self.assertIsNone(inv.get_part(part.id).min_quantity)
+
     def test_attachments_from_the_part_view(self):
         with serve({"/ds.pdf": (200, "application/pdf", b"%PDF")}) as base:
             with self.inventory() as inv:

@@ -111,6 +111,43 @@ class WebTest(unittest.TestCase):
         page = self.client.get(f"/parts/{part_id}").get_data(as_text=True)
         self.assertIn("only 7 in", page)  # the failed take was reported
 
+    def test_minimum_quantity_and_low_filter(self):
+        self.add_part(min_quantity="30")
+        self.add_part(name="LM358", min_quantity="")
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+            self.assertIsNone(inv.get_part(inv.find_part("LM358")).min_quantity)
+        page = self.client.get("/?low=1").get_data(as_text=True)
+        self.assertIn(">NE555</a>", page)
+        self.assertNotIn(">LM358</a>", page)
+        self.assertIn("below the minimum of 30", self.client.get(f"/parts/{part_id}").get_data(as_text=True))
+        edit = self.client.get(f"/parts/{part_id}/edit").get_data(as_text=True)
+        self.assertIn('name="min_quantity" min="0" value="30"', edit)
+        self.client.post(f"/parts/{part_id}/edit", data={"name": "NE555", "min_quantity": ""})
+        self.assertNotIn(">NE555</a>", self.client.get("/?low=1").get_data(as_text=True))
+        response = self.client.post(f"/parts/{part_id}/edit", data={"name": "NE555", "min_quantity": "-2"})
+        self.assertIn("must not be negative", response.get_data(as_text=True))
+
+    def test_stock_history(self):
+        self.add_part()
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+        self.client.post(f"/parts/{part_id}/stock",
+                         data={"location": "/Cabinet A/Drawer 1", "amount": "3", "op": "take", "note": "<b>amp</b>"})
+        self.client.post(f"/parts/{part_id}/move",
+                         data={"source": "/Cabinet A/Drawer 1", "destination": "Bench", "note": "testing"})
+        with self.inventory() as inv:
+            self.assertEqual([c.note for c in inv.stock_history(part_id)], ["testing", "testing", "<b>amp</b>", "new part"])
+        page = self.client.get(f"/parts/{part_id}").get_data(as_text=True)
+        self.assertIn("&lt;b&gt;amp&lt;/b&gt;", page)
+        self.assertNotIn("Full history", page)
+        page = self.client.get("/history?location=/Bench").get_data(as_text=True)
+        self.assertIn("testing", page)
+        self.assertNotIn("amp", page)
+        self.assertIn("NE555", self.client.get(f"/history?part={part_id}").get_data(as_text=True))
+        self.assertEqual(self.client.get("/history?part=999").status_code, 404)
+        self.assertIn("no location", self.client.get("/history?location=/Nowhere").get_data(as_text=True))
+
     def test_edit_part_replaces_tags_and_attributes(self):
         self.add_part()
         with self.inventory() as inv:

@@ -225,6 +225,70 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(self.inv.location_path("strasse"), "STRASSE")
         self.assertEqual(self.inv.location_path("straße"), "Straße")
 
+    def test_low_stock(self):
+        low = self.inv.add_part("NE555")
+        empty = self.inv.add_part("LM358")
+        enough = self.inv.add_part("BC547")
+        self.inv.add_part("1N4148")  # no minimum: never low
+        self.inv.set_stock(low, "Box", 3)
+        self.inv.set_stock(low, "Bench", 1)
+        self.inv.set_stock(enough, "Box", 10)
+        self.inv.set_min_quantity(low, 5)
+        self.inv.set_min_quantity(empty, 1)
+        self.inv.set_min_quantity(enough, 10)  # exactly the minimum is not low
+        self.assertEqual([p.name for p in self.inv.list_parts(low=True)], ["LM358", "NE555"])
+        self.assertEqual([p.name for p in self.inv.list_parts(location="Box", low=True)], ["NE555"])
+        self.assertTrue(self.inv.get_part(low).is_low)
+        self.assertFalse(self.inv.get_part(enough).is_low)
+        self.inv.set_min_quantity(low, None)
+        self.assertIsNone(self.inv.get_part(low).min_quantity)
+        with self.assertRaises(InventoryError):
+            self.inv.set_min_quantity(empty, -1)
+
+    def test_stock_history(self):
+        part_id = self.inv.add_part("10k resistor")
+        other = self.inv.add_part("NE555")
+        self.inv.set_stock(part_id, "Cabinet/Drawer 1", 100, note="initial count")
+        self.inv.adjust_stock(part_id, "Drawer 1", -30, note="  amp board  ")
+        self.inv.set_stock(part_id, "Drawer 1", 70)  # unchanged: not recorded
+        self.inv.move_stock(part_id, "Drawer 1", "Bench", 20)
+        self.inv.set_stock(other, "Bench", 5)
+        changes = self.inv.stock_history(part_id)
+        self.assertEqual(
+            [(c.location, c.delta, c.quantity, c.action, c.note) for c in reversed(changes)],
+            [
+                ("Cabinet/Drawer 1", 100, 100, "set", "initial count"),
+                ("Cabinet/Drawer 1", -30, 70, "adjust", "amp board"),
+                ("Cabinet/Drawer 1", -20, 50, "move", ""),
+                ("Bench", 20, 20, "move", ""),
+            ],
+        )
+        self.assertEqual(changes[0].part_name, "10k resistor")
+        self.assertEqual(len(self.inv.stock_history()), 5)
+        self.assertEqual(len(self.inv.stock_history(limit=2)), 2)
+        self.assertEqual([c.delta for c in self.inv.stock_history(location="Cabinet")], [-20, -30, 100])
+
+    def test_failed_stock_change_leaves_no_history(self):
+        part_id = self.inv.add_part("BC547")
+        self.inv.set_stock(part_id, "Box", 5)
+        with self.assertRaises(InventoryError):
+            with self.inv.transaction():
+                self.inv.adjust_stock(part_id, "Box", -2)
+                self.inv.adjust_stock(part_id, "Box", -10)
+        self.assertEqual([c.delta for c in self.inv.stock_history(part_id)], [5])
+
+    def test_history_outlives_its_location_but_not_its_part(self):
+        part_id = self.inv.add_part("BC547")
+        self.inv.set_stock(part_id, "Shelf/Box", 5)
+        self.inv.move_stock(part_id, "Box", "Bench")
+        self.inv.delete_location("/Shelf/Box")
+        self.inv.update_location("Bench", new_name="Desk")
+        self.assertEqual(
+            [c.location for c in self.inv.stock_history(part_id)], ["Bench", "Shelf/Box", "Shelf/Box"]
+        )
+        self.inv.delete_part(part_id)
+        self.assertEqual(self.inv.stock_history(), [])
+
 
 class MigrationTest(unittest.TestCase):
     def test_v1_flat_locations_become_nested(self):
@@ -249,6 +313,29 @@ class MigrationTest(unittest.TestCase):
                 )
                 with self.assertRaises(InventoryError):  # names are unique per parent now
                     inv.add_location("Cabinet 1/drawer 4")
+
+    def test_v3_gets_minimum_and_initial_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "parts.db"
+            conn = sqlite3.connect(db)
+            for migration in MIGRATIONS[:3]:
+                migration(conn) if callable(migration) else conn.executescript(migration)
+            conn.executescript("""
+                PRAGMA user_version = 3;
+                INSERT INTO parts (id, name) VALUES (1, 'NE555'), (2, 'LM358');
+                INSERT INTO locations (id, parent_id, name) VALUES (1, NULL, 'Cabinet'), (2, 1, 'Drawer 4'),
+                                                                   (3, NULL, 'Bench');
+                INSERT INTO stock VALUES (1, 2, 5), (1, 3, 1), (2, 3, 7);
+            """)
+            conn.close()
+            with Inventory(db) as inv:
+                self.assertIsNone(inv.get_part(1).min_quantity)
+                self.assertEqual(
+                    [(c.part_name, c.location, c.delta, c.quantity, c.action)
+                     for c in reversed(inv.stock_history())],
+                    [("NE555", "Bench", 1, 1, "initial"), ("NE555", "Cabinet/Drawer 4", 5, 5, "initial"),
+                     ("LM358", "Bench", 7, 7, "initial")],
+                )
 
 
 if __name__ == "__main__":

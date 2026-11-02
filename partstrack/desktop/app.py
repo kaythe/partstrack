@@ -87,6 +87,7 @@ from ..cli import default_db_path
 from ..csvio import ImportResult, decode_csv, export_csv, import_csv
 from ..store import (
     EDITABLE_FIELDS,
+    NEW_PART_NOTE,
     Attachment,
     Inventory,
     InventoryError,
@@ -121,6 +122,7 @@ EXPORT_FORMATS = {
     "Tab-separated (*.tsv)": ("\t", False),
 }
 ROLE_ID = Qt.ItemDataRole.UserRole
+HISTORY_IN_PART_VIEW = 10  # newest stock changes shown with a part
 
 
 # -- small helpers ------------------------------------------------------------
@@ -410,6 +412,12 @@ class PartDialog(SavingDialog):
         self.attributes = AttributeTable(part.attributes if part else {})
         self.attributes.setMinimumHeight(120)
         form.addRow("Attributes:", self.attributes)
+        self.min_quantity = QSpinBox()
+        self.min_quantity.setRange(0, MAX_QUANTITY)
+        self.min_quantity.setSpecialValueText("none")
+        self.min_quantity.setValue((part.min_quantity or 0) if part else 0)
+        self.min_quantity.setToolTip("Less than this in total counts as low stock")
+        form.addRow("Minimum quantity:", self.min_quantity)
 
         if part is None:
             self.quantity = QSpinBox()
@@ -472,7 +480,7 @@ class PartDialog(SavingDialog):
                     location = self.location.reference()
                     if not location:
                         raise InventoryError("please choose where the parts are stored")
-                    self.inv.set_stock(part_id, location, quantity)
+                    self.inv.set_stock(part_id, location, quantity, note=NEW_PART_NOTE)
                 for i in range(self.sources.count()):
                     source = self.sources.item(i).text()
                     attachment_id = self.inv.add_attachment(part_id, source)
@@ -480,6 +488,7 @@ class PartDialog(SavingDialog):
                         link_ids.append(attachment_id)
             self.inv.set_tags(part_id, tags)
             self.inv.set_attributes(part_id, attributes)
+            self.inv.set_min_quantity(part_id, self.min_quantity.value() or None)
         self.part_id = part_id
         self.link_ids = link_ids
 
@@ -502,6 +511,8 @@ class StockDialog(SavingDialog):
         self.amount.setRange(0, MAX_QUANTITY)
         self.amount.setValue(1)
         self.location = LocationBox(inv.list_locations(), current=location)
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("optional, kept in the history")
 
         form = QFormLayout(self)
         row = QHBoxLayout()
@@ -509,6 +520,7 @@ class StockDialog(SavingDialog):
         row.addWidget(self.amount, 1)
         form.addRow("Change:", row)
         form.addRow("Location:", self.location)
+        form.addRow("Note:", self.note)
         form.addRow(self.buttons)
         self.amount.setFocus()
         self.amount.selectAll()
@@ -518,13 +530,14 @@ class StockDialog(SavingDialog):
         if not location:
             raise InventoryError("please choose a location")
         amount = self.amount.value()
+        note = self.note.text()
         match self.operation.currentData():
             case "add":
-                self.inv.adjust_stock(self.part_id, location, amount)
+                self.inv.adjust_stock(self.part_id, location, amount, note=note)
             case "take":
-                self.inv.adjust_stock(self.part_id, location, -amount)
+                self.inv.adjust_stock(self.part_id, location, -amount, note=note)
             case "set":
-                self.inv.set_stock(self.part_id, location, amount)
+                self.inv.set_stock(self.part_id, location, amount, note=note)
 
 
 class MoveDialog(SavingDialog):
@@ -540,11 +553,14 @@ class MoveDialog(SavingDialog):
         self.quantity.setRange(0, MAX_QUANTITY)
         self.quantity.setSpecialValueText("all")
         self.destination = LocationBox(inv.list_locations(), placeholder="new or existing location")
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("optional, kept in the history")
 
         form = QFormLayout(self)
         form.addRow("From:", self.source)
         form.addRow("Quantity:", self.quantity)
         form.addRow("To:", self.destination)
+        form.addRow("Note:", self.note)
         form.addRow(self.buttons)
         self.destination.setFocus()
 
@@ -555,7 +571,9 @@ class MoveDialog(SavingDialog):
         if not destination:
             raise InventoryError("please choose where to move the parts")
         quantity = self.quantity.value() or None
-        self.moved = self.inv.move_stock(self.part_id, self.source.currentData(), destination, quantity)
+        self.moved = self.inv.move_stock(
+            self.part_id, self.source.currentData(), destination, quantity, note=self.note.text()
+        )
 
 
 class LocationDialog(SavingDialog):
@@ -714,7 +732,12 @@ class PartView(QScrollArea):
             details.addRow("Changed:", selectable_label(part.updated_at))
         layout.addLayout(details)
 
-        layout.addWidget(heading(f"Stock: {part.total_quantity}"))
+        stock_title = f"Stock: {part.total_quantity}"
+        if part.is_low:
+            stock_title += f" (below the minimum of {part.min_quantity})"
+        elif part.min_quantity is not None:
+            stock_title += f" (minimum {part.min_quantity})"
+        layout.addWidget(heading(stock_title))
         if part.stock:
             stock = QTreeWidget()
             stock.setHeaderLabels(["Location", "Quantity"])
@@ -731,6 +754,31 @@ class PartView(QScrollArea):
             layout.addWidget(stock)
         else:
             layout.addWidget(QLabel("Not stored anywhere."))
+
+        changes = self.main.inv.stock_history(part.id, limit=HISTORY_IN_PART_VIEW)
+        if changes:
+            layout.addWidget(heading("History"))
+            history = QTreeWidget()
+            history.setHeaderLabels(["Time (UTC)", "Location", "Change", "Now", "Note"])
+            history.setRootIsDecorated(False)
+            for change in changes:
+                item = QTreeWidgetItem([change.at, change.location, f"{change.delta:+d}", str(change.quantity),
+                                        change.note])
+                item.setToolTip(1, change.location)
+                item.setToolTip(2, change.action)
+                item.setToolTip(4, change.note)
+                for column in (2, 3):
+                    item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
+                history.addTopLevelItem(item)
+            history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            history.header().setStretchLastSection(False)
+            for column, mode in enumerate([QHeaderView.ResizeMode.ResizeToContents, QHeaderView.ResizeMode.Stretch,
+                                           QHeaderView.ResizeMode.ResizeToContents,
+                                           QHeaderView.ResizeMode.ResizeToContents,
+                                           QHeaderView.ResizeMode.Stretch]):
+                history.header().setSectionResizeMode(column, mode)
+            history.setFixedHeight(history.sizeHintForRow(0) * (len(changes) + 1) + 2 * history.frameWidth() + 8)
+            layout.addWidget(history)
 
         if part.notes:
             layout.addWidget(heading("Notes"))
@@ -864,6 +912,10 @@ class MainWindow(QMainWindow):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             combo.currentIndexChanged.connect(self.refresh_parts)
             filters.addWidget(combo)
+        self.low_filter = QCheckBox("Low stock")
+        self.low_filter.setToolTip("Only parts below their minimum quantity")
+        self.low_filter.toggled.connect(self.refresh_parts)
+        filters.addWidget(self.low_filter)
 
         self.table = QTableWidget(0, len(self.PART_COLUMNS))
         self.table.setHorizontalHeaderLabels(self.PART_COLUMNS)
@@ -1043,6 +1095,7 @@ class MainWindow(QMainWindow):
                 tag=self.tag_filter.currentData(),
                 location=self.location_filter.currentData(),
                 category=self.category_filter.currentData(),
+                low=self.low_filter.isChecked(),
             )
         except InventoryError as e:
             self.statusBar().showMessage(str(e))
@@ -1064,8 +1117,10 @@ class MainWindow(QMainWindow):
                 item.setData(ROLE_ID, part.id)
                 if column == 2:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    if value == 0:
+                    if value == 0 or part.is_low:
                         item.setForeground(QColor("#d9534f"))
+                    if part.is_low:
+                        item.setToolTip(f"Below the minimum of {part.min_quantity}")
                 self.table.setItem(row, column, item)
         self.table.setSortingEnabled(True)  # sorts by the column the user chose
         if parts and not self._columns_sized:
@@ -1264,7 +1319,8 @@ class MainWindow(QMainWindow):
 
         def run(dry_run: bool) -> ImportResult:
             return import_csv(self.inv, io.StringIO(text, newline=""), base_dir=path.parent, add_stock=add_stock,
-                              default_location=location or None, dry_run=dry_run)
+                              default_location=location or None, dry_run=dry_run,
+                              note=f"CSV import: {path.name}")
 
         try:
             preview = run(True)

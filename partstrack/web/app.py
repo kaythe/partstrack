@@ -59,6 +59,7 @@ from ..csvio import decode_csv, export_csv, import_csv
 from ..store import (
     ATTACHMENT_KINDS,
     EDITABLE_FIELDS,
+    NEW_PART_NOTE,
     Inventory,
     InventoryError,
     NotFoundError,
@@ -216,6 +217,7 @@ def _form_values(part: Part | None) -> dict[str, str]:
     if part is None:
         return {}
     values = {name: getattr(part, name) for name in EDITABLE_FIELDS}
+    values["min_quantity"] = "" if part.min_quantity is None else str(part.min_quantity)
     values["tags"] = ", ".join(part.tags)
     values["attributes"] = "\n".join(f"{k} = {v}" for k, v in part.attributes.items())
     return values
@@ -240,13 +242,14 @@ def _render_part_form(part: Part | None, values: dict[str, str]):
 @bp.get("/")
 def parts():
     inv = inventory()
-    filters = {name: request.args.get(name, "").strip() for name in ("q", "tag", "location", "category")}
+    filters = {name: request.args.get(name, "").strip() for name in ("q", "tag", "location", "category", "low")}
     try:
         found = inv.list_parts(
             filters["q"],
             tag=filters["tag"] or None,
             location=filters["location"] or None,
             category=filters["category"] or None,
+            low=bool(filters["low"]),
         )
     except InventoryError as e:
         flash(str(e), "error")
@@ -271,11 +274,12 @@ def new_part():
             part_id = inv.add_part(_text("name"), **{f: _text(f) for f in EDITABLE_FIELDS if f != "name"})
             inv.set_tags(part_id, _parse_tags(_text("tags")))
             inv.set_attributes(part_id, _parse_attributes(_text("attributes")))
+            inv.set_min_quantity(part_id, _parse_int(_text("min_quantity"), "Minimum quantity", allow_empty=True))
             quantity = _parse_int(_text("quantity"), "Quantity", allow_empty=True)
             if quantity:
                 if not _text("location"):
                     raise InventoryError("please choose where the parts are stored")
-                inv.set_stock(part_id, _text("location"), quantity)
+                inv.set_stock(part_id, _text("location"), quantity, note=NEW_PART_NOTE)
             _save_uploads(inv, part_id, request.files.getlist("datasheets"), "datasheet")
             _save_uploads(inv, part_id, request.files.getlist("images"), "image")
             link_ids = _save_links(inv, part_id, _text("links"), None)
@@ -287,11 +291,19 @@ def new_part():
     return redirect(url_for("ui.part", part_id=part_id))
 
 
+HISTORY_ON_PART_PAGE = 10  # newest changes shown on a part's page
+
+
 @bp.get("/parts/<int:part_id>")
 def part(part_id: int):
     inv = inventory()
     return render_template(
-        "part.html", part=inv.get_part(part_id), locations=inv.list_locations(), kinds=ATTACHMENT_KINDS
+        "part.html",
+        part=inv.get_part(part_id),
+        history=inv.stock_history(part_id, limit=HISTORY_ON_PART_PAGE + 1),
+        history_limit=HISTORY_ON_PART_PAGE,
+        locations=inv.list_locations(),
+        kinds=ATTACHMENT_KINDS,
     )
 
 
@@ -306,6 +318,7 @@ def edit_part(part_id: int):
             inv.update_part(part_id, **{f: _text(f) for f in EDITABLE_FIELDS})
             inv.set_tags(part_id, _parse_tags(_text("tags")))
             inv.set_attributes(part_id, _parse_attributes(_text("attributes")))
+            inv.set_min_quantity(part_id, _parse_int(_text("min_quantity"), "Minimum quantity", allow_empty=True))
     except InventoryError as e:
         flash(str(e), "error")
         return _render_part_form(current, request.form)
@@ -331,13 +344,14 @@ def change_stock(part_id: int):
     if not location:
         raise InventoryError("please choose a location")
     amount = _parse_int(_text("amount"), "Amount")
+    note = _text("note")
     match request.form.get("op"):
         case "add":
-            inv.adjust_stock(part_id, location, amount)
+            inv.adjust_stock(part_id, location, amount, note=note)
         case "take":
-            inv.adjust_stock(part_id, location, -amount)
+            inv.adjust_stock(part_id, location, -amount, note=note)
         case "set":
-            inv.set_stock(part_id, location, amount)
+            inv.set_stock(part_id, location, amount, note=note)
         case _:
             abort(400)
     return redirect(url_for("ui.part", part_id=part_id))
@@ -348,7 +362,7 @@ def change_stock(part_id: int):
 def move_stock(part_id: int):
     inv = inventory()
     quantity = _parse_int(_text("quantity"), "Quantity", allow_empty=True)
-    moved = inv.move_stock(part_id, _text("source"), _text("destination"), quantity)
+    moved = inv.move_stock(part_id, _text("source"), _text("destination"), quantity, note=_text("note"))
     flash(f"Moved {moved}.", "success")
     return redirect(url_for("ui.part", part_id=part_id))
 
@@ -403,6 +417,30 @@ def delete_attachment(attachment_id: int):
     part_id = inv.get_attachment(attachment_id).part_id
     inv.remove_attachment(attachment_id)
     return redirect(url_for("ui.part", part_id=part_id))
+
+
+# -- history ------------------------------------------------------------------
+
+
+HISTORY_LIMIT = 500  # newest changes shown on the history page
+
+
+@bp.get("/history")
+def history():
+    inv = inventory()
+    filters = {name: request.args.get(name, "").strip() for name in ("part", "location")}
+    part = inv.get_part(int(filters["part"])) if filters["part"].isdigit() else None
+    try:
+        changes = inv.stock_history(
+            part.id if part else None, location=filters["location"] or None, limit=HISTORY_LIMIT
+        )
+    except InventoryError as e:
+        flash(str(e), "error")
+        changes = []
+    return render_template(
+        "history.html", changes=changes, part=part, filters=filters, limit=HISTORY_LIMIT,
+        locations=inv.list_locations(),
+    )
 
 
 # -- locations ----------------------------------------------------------------
@@ -501,6 +539,7 @@ def import_():
             default_location=_text("location") or None,
             dry_run=dry_run,
             allow_files=False,
+            note=f"CSV import: {_safe_filename(upload.filename)}",
         )
     except InventoryError as e:
         flash(str(e), "error")

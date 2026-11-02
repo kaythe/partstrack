@@ -75,6 +75,23 @@ whose download fails; you get a warning and can retry later with
 safety, files are never downloaded from the server itself or from link-local
 addresses.
 
+## Low stock and history
+
+```sh
+partstrack edit NE555 --min 10            # less than 10 in total counts as low stock
+partstrack ls --low                       # what to reorder (combines with -t, -l, -c)
+partstrack edit NE555 --no-min            # remove the minimum
+partstrack stock NE555 Bench -5 -m "amp board"  # -m: note for the history (also for move)
+partstrack history NE555                  # the newest 50 stock changes of NE555
+partstrack history -l "Cabinet A" -n 0    # all changes in Cabinet A and inside it
+```
+
+Every stock change is recorded with the time (UTC), the location, the change,
+the new quantity and an optional note; the first stock of a new part is noted
+as "new part", and CSV imports note the file name. Deleting
+a part deletes its history too. Stock that existed before the history was added
+appears as one `initial` entry per location.
+
 Parts are referred to by name (case-insensitive) or by id. Use `#12` to force
 an id lookup when a part's name is itself a number. For that reason, part
 names cannot start with `#`.
@@ -107,7 +124,7 @@ partstrack import order.csv --add-stock -l Incoming # e.g. a distributor order
 ```
 
 The CSV has one row per part and location. Columns are `name`, `description`,
-`manufacturer`, `mpn`, `category`, `package`, `location`, `quantity`, `tags`,
+`manufacturer`, `mpn`, `category`, `package`, `location`, `quantity`, `min_quantity`, `tags`,
 `datasheets`, `images`, `other_attachments`, `notes`, plus one `attr:<name>`
 column per attribute. Lists within a cell are separated by `;`. Exported
 locations are full paths starting with `/`, so importing them never lands in a
@@ -142,7 +159,8 @@ python3 -m venv .venv
 It covers the same features as the CLI: searching and filtering, adding and
 editing parts, taking, adding and moving stock, uploading pictures and
 datasheets (pictures are shown on the part's page), the location tree, and CSV
-import/export. While you type tags, existing tags are suggested. The header has a switch for light mode, dark mode, or following
+import/export. Parts can have a minimum quantity; the parts list can show
+only the parts below it, and a History page lists all stock changes. While you type tags, existing tags are suggested. The header has a switch for light mode, dark mode, or following
 the device's setting, and an About page shows the version. The CLI and the web interface can be used on the same database
 at the same time.
 
@@ -179,7 +197,8 @@ python3 -m venv .venv
 ```
 
 The Parts tab has a searchable, filterable and sortable table, with the
-selected part's details, stock, pictures and attachments next to it.
+selected part's details, stock, recent stock changes, pictures and attachments
+next to it. "Low stock" shows only the parts below their minimum quantity.
 Double-click a part to edit it, a stock entry to change it, or an attachment
 to open it. The Locations tab shows the location tree. CSV import shows what a
 file contains before anything is saved. **File → Open database…** switches to

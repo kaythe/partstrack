@@ -1,0 +1,41 @@
+{#
+partstrack - a small inventory for electronic parts
+Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-#}
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+<h1>Stock history{% if part %} of <a href="{{ url_for('ui.part', part_id=part.id) }}">{{ part.name }}</a>{% endif %}</h1>
+
+<form class="filters" method="get">
+  {% if part %}<input type="hidden" name="part" value="{{ part.id }}">{% endif %}
+  <select name="location" aria-label="Location">
+    <option value="">All locations</option>
+    {% for l in locations %}<option value="/{{ l.path }}" {% if '/' ~ l.path == filters.location %}selected{% endif %}>{{ l.path }}</option>{% endfor %}
+  </select>
+  <button>Filter</button>
+  {% if filters.values()|select|list %}<a href="{{ url_for('ui.history') }}">Show all</a>{% endif %}
+</form>
+
+{% if changes %}
+{% include "_history_table.html" %}
+<p class="muted">
+  {% if changes|length >= limit %}The newest {{ limit }} changes.{% else %}{{ changes|length }} change{{ "" if changes|length == 1 else "s" }}.{% endif %}
+</p>
+{% else %}
+<p class="empty">No stock changes found.</p>
+{% endif %}
+{% endblock %}

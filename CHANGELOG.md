@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Minimum quantity per part: a part with less than that in total counts as
+  low on stock. Set it with `add`/`edit --min` (`edit --no-min` removes it) or
+  in the part forms, and list low parts with `partstrack ls --low` or the
+  "Low stock" filter in the web interface and desktop app. CSV files have a
+  new `min_quantity` column.
+- Stock history: every stock change is recorded with time, location, change,
+  new quantity and an optional note (`stock -m`, `move -m`, or the note fields
+  in the web interface and desktop app). Show it with `partstrack history`,
+  on a part's page, on the web interface's new History page, and in the
+  desktop app's part view. Existing stock is recorded as `initial` entries
+  when the database is upgraded.
+
 ## [1.0.0] - 2026-10-30
 
 First stable release.
