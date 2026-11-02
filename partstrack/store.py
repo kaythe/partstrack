@@ -720,7 +720,27 @@ class Inventory:
     def _load_parts(self, ids_sql: str, params: list) -> list[Part]:
         """Load the parts whose ids `ids_sql` (a SELECT of one column) returns, sorted
         by name, with their stock, tags, attributes and attachments. It runs one query
-        per table however many parts there are, so long lists stay fast."""
+        per table however many parts there are, so long lists stay fast. The queries
+        share one read transaction: each evaluates `ids_sql` again, and a write by
+        someone else in between would otherwise return parts the first one didn't load."""
+        with self._consistent_reads():
+            return self._load_parts_now(ids_sql, params)
+
+    @contextmanager
+    def _consistent_reads(self) -> Iterator[None]:
+        """Make the queries inside see one state of the database. Writers elsewhere
+        wait until it ends (SQLite's busy timeout covers that). Works on read-only
+        databases too, unlike transaction()."""
+        if self.conn.in_transaction:  # e.g. inside transaction(): already consistent
+            yield
+            return
+        self.conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self.conn.rollback()  # only read; this just ends the transaction
+
+    def _load_parts_now(self, ids_sql: str, params: list) -> list[Part]:
         where = f" IN ({ids_sql})"
         parts = {
             r["id"]: Part(**dict(r))

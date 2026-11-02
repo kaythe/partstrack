@@ -16,6 +16,8 @@
 
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -306,6 +308,33 @@ class InventoryTest(unittest.TestCase):
         for query in ["vcc<five", "vcc>=", "vcc="]:
             with self.subTest(query=query), self.assertRaises(InventoryError):
                 self.inv.list_parts(query)
+
+    def test_list_parts_while_someone_else_writes(self):
+        for i in range(3):
+            self.inv.add_tags(self.inv.add_part(f"P{i}"), ["smd"])
+        writer = threading.Thread(target=self._add_part_elsewhere, args=("NEW",))
+
+        def start_writer_between_queries(sql):
+            if "FROM stock" in sql and not writer.is_alive() and writer.ident is None:
+                writer.start()
+                time.sleep(0.2)  # give it time to try to commit during the listing
+
+        self.inv.conn.set_trace_callback(start_writer_between_queries)
+        try:
+            parts = self.inv.list_parts()
+        finally:
+            self.inv.conn.set_trace_callback(None)
+        writer.join()
+        self.assertEqual([p.name for p in parts], ["P0", "P1", "P2"])  # one consistent state
+        self.assertEqual([p.tags for p in parts], [["smd"]] * 3)
+        self.assertIn("NEW", [p.name for p in self.inv.list_parts()])  # the writer only waited
+
+    def _add_part_elsewhere(self, name):
+        conn = sqlite3.connect(self.dir / "parts.db", timeout=10)
+        with conn:
+            conn.execute("INSERT INTO parts (name) VALUES (?)", (name,))
+            conn.execute("INSERT INTO part_tags SELECT (SELECT id FROM parts WHERE name = ?), id FROM tags", (name,))
+        conn.close()
 
     def test_get_parts(self):
         b, a = self.inv.add_part("B"), self.inv.add_part("A")
