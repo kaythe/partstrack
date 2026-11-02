@@ -1070,7 +1070,7 @@ class LabelDialog(QDialog):
             raise InventoryError("please enter the web interface's address, which the QR codes link to")
         base_url = normalize_base_url(self.url.text())
         labels = [location_label(base_url, l) for l in self.checked_locations()]
-        labels += [part_label(base_url, self.inv.get_part(part_id)) for part_id in self.checked_part_ids()]
+        labels += [part_label(base_url, part) for part in self.inv.get_parts(self.checked_part_ids())]
         if not labels:
             raise InventoryError("please check the locations or parts to print labels for")
         return layout, labels

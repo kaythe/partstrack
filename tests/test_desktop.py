@@ -26,7 +26,7 @@ from .fileserver import serve
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # no display needed
 try:
-    from PySide6.QtCore import QSettings
+    from PySide6.QtCore import QSettings, Qt
     from PySide6.QtWidgets import QApplication
 
     from partstrack.desktop import app as desktop
@@ -291,6 +291,30 @@ class DesktopTest(unittest.TestCase):
         self.assertFalse(dialog.part_list.topLevelItem(0).isHidden())
         dialog.part_filter.setText("xyz")
         self.assertTrue(dialog.part_list.topLevelItem(0).isHidden())
+
+    def test_label_dialog_loads_checked_parts_together(self):
+        with self.inventory() as inv:
+            for i in range(30):
+                inv.add_part(f"Part {i:02}")
+        self.window.refresh()
+        dialog = desktop.LabelDialog(self.window.inv, self.window.settings, self.window)
+        self.addCleanup(dialog.deleteLater)
+        dialog.url.setText("http://parts.lan/")
+
+        def queries_for(count):
+            for i in range(dialog.part_list.topLevelItemCount()):
+                state = Qt.CheckState.Checked if i < count else Qt.CheckState.Unchecked
+                dialog.part_list.topLevelItem(i).setCheckState(0, state)
+            statements = []
+            self.window.inv.conn.set_trace_callback(statements.append)
+            try:
+                _, labels = dialog.labels()
+            finally:
+                self.window.inv.conn.set_trace_callback(None)
+            self.assertEqual([l.title for l in labels], [f"Part {i:02}" for i in range(count)])
+            return len(statements)
+
+        self.assertEqual(queries_for(2), queries_for(30))
 
     def test_label_dialog_layout_fields_and_preview_size(self):
         dialog = desktop.LabelDialog(self.window.inv, self.window.settings, self.window)
