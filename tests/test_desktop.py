@@ -466,6 +466,18 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(self.table_names(), ["LM358", "NE555"])  # the open backup is still there
         self.assertTrue(self.window.read_only)
 
+    def test_unexpected_download_error_ends_the_download(self):
+        def broken(url, path, progress=None):
+            raise RuntimeError("something unforeseen")
+
+        self._patch("download_snapshot", broken)
+        self.window.download_copy("http://parts.lan/", self.dir / "copy")
+        self.wait_for_copy()  # finished, not stuck
+        self.assertIn("RuntimeError: something unforeseen", self.errors[-1])
+        self.window.download_copy("http://parts.lan/", self.dir / "copy")  # a new attempt is possible
+        self.wait_for_copy()
+        self.assertEqual(len(self.errors), 2)
+
     def test_server_address_is_shared_with_labels(self):
         self.window.settings.setValue("labels/url", "http://old.lan/")  # saved by an older version
         self.assertEqual(desktop.server_url(self.window.settings), "http://old.lan/")

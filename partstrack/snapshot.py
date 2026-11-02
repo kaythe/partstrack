@@ -27,6 +27,7 @@ unpacking into the same folder again replaces the copy.
 
 from __future__ import annotations
 
+import http.client
 import json
 import shutil
 import sqlite3
@@ -111,12 +112,21 @@ def download_snapshot(base_url: str, path: Path, progress: Callable[[int], None]
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response, open(path, "wb") as out:
+            expected = response.headers.get("Content-Length")
             received = 0
             while chunk := response.read(1024 * 1024):
                 out.write(chunk)
                 received += len(chunk)
                 if progress is not None:
                     progress(received)
+            # http.client stops at a closed connection without complaint when the
+            # length was announced; a chunked answer cut short raises IncompleteRead.
+            if expected is not None and expected.isdigit() and received != int(expected):
+                raise InventoryError(f"the download from {url} was cut off ({received} of {expected} bytes)")
+    except http.client.IncompleteRead:
+        raise InventoryError(f"the download from {url} was cut off") from None
+    except http.client.HTTPException as e:  # not an OSError, so the handlers below miss it
+        raise InventoryError(f"cannot download {url}: the server's answer is invalid ({type(e).__name__})") from None
     except urllib.error.HTTPError as e:
         if e.code == 404:
             raise InventoryError(f"{url} was not found; is that a partstrack server, and is it up to date?") from None

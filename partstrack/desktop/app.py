@@ -426,10 +426,14 @@ class CopyDownloader(QObject):
         threading.Thread(target=self._run, name="partstrack-copy", daemon=True).start()
 
     def _run(self) -> None:
+        # Always emit finished: the window counts the download as running until then
+        # and refuses to start another one.
         try:
             download_snapshot(self.url, self.archive, self.progress.emit)
         except InventoryError as e:
             self.finished.emit(self, str(e))
+        except Exception as e:  # a bug or something unforeseen must not leave it hanging
+            self.finished.emit(self, f"the download failed: {type(e).__name__}: {e}")
         else:
             self.finished.emit(self, None)
 

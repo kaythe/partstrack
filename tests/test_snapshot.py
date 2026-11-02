@@ -14,11 +14,13 @@
 #     You should have received a copy of the GNU General Public License
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import http.server
 import io
 import json
 import sqlite3
 import tarfile
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -243,6 +245,40 @@ class SnapshotTest(unittest.TestCase):
         (db_path.parent / COPY_INFO).write_text(json.dumps({"source": "http://a/", "taken_at": "2026-11-02 08:00:00"}))
         self.assertEqual(read_copy_info(db_path).description, "copy of http://a/ from 2026-11-02 08:00:00 UTC")
         self.assertEqual(CopyInfo("x", "an unknown time").description, "copy of x from an unknown time")
+
+    def test_cut_off_downloads(self):
+        def serve_once(send):
+            class Handler(http.server.BaseHTTPRequestHandler):
+                protocol_version = "HTTP/1.1"
+
+                def do_GET(self):
+                    send(self)
+                    self.close_connection = True
+
+                def log_message(self, *args):
+                    pass
+
+            server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+            threading.Thread(target=server.handle_request, daemon=True).start()
+            self.addCleanup(server.server_close)
+            return f"http://127.0.0.1:{server.server_port}/"
+
+        def chunked(handler):
+            handler.send_response(200)
+            handler.send_header("Transfer-Encoding", "chunked")
+            handler.end_headers()
+            handler.wfile.write(b"a\r\n0123456789\r\n64\r\nshort")
+
+        def short_body(handler):
+            handler.send_response(200)
+            handler.send_header("Content-Length", "1000")
+            handler.end_headers()
+            handler.wfile.write(b"x" * 10)
+
+        with self.assertRaisesRegex(InventoryError, "was cut off$"):
+            download_snapshot(serve_once(chunked), self.dir / "down.tar.gz")
+        with self.assertRaisesRegex(InventoryError, r"was cut off \(10 of 1000 bytes\)"):
+            download_snapshot(serve_once(short_body), self.dir / "down.tar.gz")
 
     def test_download(self):
         data = self.snapshot().read_bytes()
