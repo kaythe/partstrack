@@ -29,7 +29,7 @@ The [desktop app](#desktop-app) on Linux:
 
 The [command-line app](#examples):
 
-<img src="docs/screenshots/cli.png" alt="Searching, taking stock and showing a part on the command line" width="724">
+<img src="docs/screenshots/cli.png" alt="Searching, taking stock and showing a part on the command line" width="730">
 
 ## Install / run
 
