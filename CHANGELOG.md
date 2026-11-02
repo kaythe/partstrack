@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all that the current filters show) to add or remove tags, set the category,
   move all their stock (optionally only from one location) or delete them in
   one go.
+- A read-only JSON API in the web interface under `/api`: parts (with the
+  same search and filters as the parts page), single parts, locations, tags,
+  categories and the stock history.
 
 ### Changed
 

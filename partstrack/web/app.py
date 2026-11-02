@@ -103,6 +103,9 @@ def create_app(db_path: str | Path, public_url: str | None = None) -> Flask:
         MAX_CONTENT_LENGTH=100 * 1024 * 1024,
     )
     app.register_blueprint(bp)
+    from .api import api  # here, because api.py imports this module
+
+    app.register_blueprint(api)
     app.add_template_global(downloadable_name)
     app.teardown_appcontext(_close_inventory)
     return app

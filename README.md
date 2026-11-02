@@ -216,6 +216,27 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+## JSON API
+
+The web interface also answers in JSON under `/api`, for scripts and other
+programs. It is read-only: nothing can be changed through it.
+
+```sh
+curl http://parts.lan:8080/api                        # the endpoints and the version
+curl 'http://parts.lan:8080/api/parts?q=smd&low=1'    # filters: q, tag, location, category, low
+curl 'http://parts.lan:8080/api/parts?q=resistance%3E%3D10k'  # resistance>=10k, URL-encoded
+curl http://parts.lan:8080/api/parts/12
+curl http://parts.lan:8080/api/locations
+curl http://parts.lan:8080/api/tags
+curl http://parts.lan:8080/api/categories
+curl 'http://parts.lan:8080/api/history?part=12&limit=0'  # stock changes; limit 0 for all
+```
+
+Parts include their stock, tags, attributes, minimum quantity and whether they
+are low on stock. Attachments are links to the web interface. Errors come back
+as `{"error": "..."}` with a 4xx status. Like the web interface, the API has no
+login, so anyone who can reach the server can read the inventory.
+
 ## Labels with QR codes
 
 Labels for storage locations and parts carry a QR code. Scanning it with a
@@ -332,8 +353,8 @@ files keep the right owner:
 - `partstrack/labels.py` computes label layouts and contents for both the web
   interface and the desktop app.
 - `partstrack/cli.py` is the command-line front end, a thin layer over `Inventory`.
-- `partstrack/web/` holds the web front end: a Flask app in `app.py`, plus
-  Jinja templates and a stylesheet.
+- `partstrack/web/` holds the web front end: a Flask app in `app.py`, the
+  read-only JSON API in `api.py`, plus Jinja templates and a stylesheet.
 - `partstrack/desktop/app.py` is the desktop front end (PySide6).
 - Schema changes go into `MIGRATIONS` in `store.py`. They are applied
   automatically using SQLite's `user_version`.
