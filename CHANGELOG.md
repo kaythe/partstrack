@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-02
+
 ### Added
 
 - Minimum quantity per part: a part with less than that in total counts as
@@ -54,12 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Listing and searching parts is much faster for large inventories (about
   ten times for 2000 parts), in all front ends and the CSV export.
+- Search words containing `=`, `<`, `>` or `:` are now attribute filters
+  (see above) instead of plain text, and quotes group words: `"10k smd"`
+  matches that phrase.
 
 ### Security
 
 - The web interface refuses changes sent from other websites. Before, a
   website you visited could make your browser post forms to partstrack, for
-  example to delete parts (cross-site request forgery).
+  example to delete parts (cross-site request forgery). Behind an HTTPS
+  reverse proxy, start `partstrack-web` with `--url https://…`, so that
+  changes from older browsers are still accepted.
 
 ## [1.0.0] - 2026-10-30
 
@@ -137,7 +144,8 @@ First release.
 - Light/dark theme switch in the web interface, with an "Auto" setting that
   follows the device.
 
-[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/kaythe/partstrack/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kaythe/partstrack/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/kaythe/partstrack/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kaythe/partstrack/compare/v0.1.0...v0.2.0
