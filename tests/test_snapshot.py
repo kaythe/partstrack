@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from partstrack.snapshot import (
     BACKUP,
@@ -83,6 +84,52 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(list((folder / "attachments").rglob("*.pdf")), [])
         self.assertEqual(read_copy_info(db_path).source, "http://b/")
         self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(["attachments", COPY_INFO, "parts.db"]))
+
+    def test_failed_replacement_keeps_the_old_copy(self):
+        folder = self.dir / "copy"
+        db_path = unpack_copy(self.snapshot(), folder, source="http://a/")
+        self.server.add_part("LM358")
+        newer = self.snapshot()
+        rename = Path.rename
+
+        def failing(when):
+            def fake(path, target):
+                if when(path, Path(target)):
+                    raise PermissionError("in use by another program")
+                return rename(path, target)
+            return fake
+
+        cases = {
+            "old attachments locked": lambda path, target: path == folder / "attachments",
+            "new database can't be moved in": lambda path, target: target == folder / "parts.db"
+                                                                     and ".partstrack-new-" in str(path),
+            "marker can't be moved in": lambda path, target: target == folder / COPY_INFO
+                                                               and ".partstrack-new-" in str(path),
+        }
+        for case, when in cases.items():
+            with self.subTest(case=case):
+                with mock.patch.object(Path, "rename", failing(when)), \
+                        self.assertRaisesRegex(InventoryError, "old one was kept"):
+                    unpack_copy(newer, folder, source="http://b/")
+                with Inventory(db_path, read_only=True) as copy:
+                    self.assertEqual([p.name for p in copy.list_parts()], ["NE555"])
+                    self.assertTrue(copy.get_part(self.part_id).attachments[0].path.is_file())
+                self.assertEqual(read_copy_info(db_path).source, "http://a/")
+                self.assertEqual([p.name for p in folder.iterdir() if p.name.startswith(".partstrack-")], [])
+        # If even putting the old copy back fails, its files are kept and the message says where.
+        with mock.patch.object(Path, "rename", failing(lambda path, target: target == folder / COPY_INFO)), \
+                self.assertRaisesRegex(InventoryError, "the rest of its files are in") as caught:
+            unpack_copy(newer, folder, source="http://b/")
+        retired = Path(str(caught.exception).rpartition("its files are in ")[2])
+        self.assertEqual([p.name for p in retired.iterdir()], [COPY_INFO])  # the rest is back
+        self.assertTrue((folder / "parts.db").is_file())
+        for item in retired.iterdir():  # put it back by hand, as a user would
+            if not (folder / item.name).exists():
+                item.rename(folder / item.name)
+        unpack_copy(newer, folder, source="http://b/")  # and without the problem it works
+        self.assertEqual([p.name for p in folder.iterdir() if p.name.startswith(".partstrack-")], [])
+        with Inventory(db_path, read_only=True) as copy:
+            self.assertEqual([p.name for p in copy.list_parts()], ["LM358", "NE555"])
 
     def test_never_overwrites_other_files(self):
         folder = self.dir / "mine"

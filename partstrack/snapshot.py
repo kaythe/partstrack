@@ -124,6 +124,8 @@ def unpack_copy(archive: Path, folder: Path, *, source: str, kind: str = SERVER)
     old copy is replaced only once the new one has been unpacked and checked.
     """
     folder.mkdir(parents=True, exist_ok=True)
+    for leftover in folder.glob(TEMP_PREFIX + "old-*"):  # an old copy that couldn't be deleted last time
+        shutil.rmtree(leftover, ignore_errors=True)
     others = [p for p in folder.iterdir() if not p.name.startswith(TEMP_PREFIX)]
     if others and not (folder / COPY_INFO).is_file():
         raise InventoryError(f"{folder} contains other files; choose an empty folder or one with an earlier copy")
@@ -149,17 +151,45 @@ def unpack_copy(archive: Path, folder: Path, *, source: str, kind: str = SERVER)
         info = {"source": source, "taken_at": taken_at, "kind": kind}
         (staging / COPY_INFO).write_text(json.dumps(info, indent=2) + "\n")
 
-        for name in (DATABASE, DATABASE + "-journal", ATTACHMENTS, COPY_INFO):
-            old = folder / name
-            if old.is_dir():
-                shutil.rmtree(old)
-            elif old.exists():
-                old.unlink()
-        for item in staging.iterdir():
-            item.rename(folder / item.name)
+        _swap_in(staging, folder)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return folder / DATABASE
+
+
+# What a copy consists of. Attachments come first: on Windows, a file that a
+# viewer has open makes moving its folder fail, and then nothing has changed yet.
+COPY_FILES = (ATTACHMENTS, DATABASE, DATABASE + "-journal", COPY_INFO)
+
+
+def _swap_in(staging: Path, folder: Path) -> None:
+    """Replace the copy in `folder` with the files in `staging`, so that either the
+    new copy is complete or the old one is back as it was. The old files are only
+    moved aside (renames in the same folder) and deleted once the new ones are in."""
+    retired = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX + "old-", dir=folder))
+    moved_aside, installed = [], []
+    try:
+        for name in COPY_FILES:
+            if (folder / name).exists():
+                (folder / name).rename(retired / name)
+                moved_aside.append(name)
+        for item in staging.iterdir():
+            item.rename(folder / item.name)
+            installed.append(item.name)
+    except OSError as e:
+        try:
+            for name in installed:
+                (folder / name).rename(staging / name)
+            for name in moved_aside:
+                (retired / name).rename(folder / name)
+        except OSError:
+            raise InventoryError(
+                f"the copy could not be replaced ({e}), and the old one could not be completely put back "
+                f"either; the rest of its files are in {retired}"
+            ) from None
+        shutil.rmtree(retired, ignore_errors=True)
+        raise InventoryError(f"the copy could not be replaced, so the old one was kept: {e}") from None
+    shutil.rmtree(retired, ignore_errors=True)  # a file still in use stays behind and is removed next time
 
 
 def _extract(archive: Path, destination: Path) -> datetime | None:
