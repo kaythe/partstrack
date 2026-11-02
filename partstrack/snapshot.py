@@ -73,7 +73,12 @@ class CopyInfo:
 def write_snapshot(inv: Inventory, target: Path | BinaryIO) -> None:
     """Write the database and its attachments to `target` (a path or a binary file)
     as a .tar.gz. The database is copied with SQLite's backup API, so it is
-    consistent even while others write."""
+    consistent even while others write.
+
+    Attachment files are not locked: one deleted while the snapshot is made is
+    left out (the copy then shows it as missing) rather than failing the whole
+    snapshot. Locking would hold up every change for as long as writing the
+    archive takes."""
     with tempfile.TemporaryDirectory() as tmp:
         database = Path(tmp) / DATABASE
         copy = sqlite3.connect(database)
@@ -89,7 +94,14 @@ def write_snapshot(inv: Inventory, target: Path | BinaryIO) -> None:
         with tar:
             tar.add(database, arcname=DATABASE)
             if inv.attachments_dir.is_dir():
-                tar.add(inv.attachments_dir, arcname=ATTACHMENTS)
+                for path in sorted(inv.attachments_dir.rglob("*")):
+                    if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                        continue  # unpack_copy would refuse it
+                    name = f"{ATTACHMENTS}/{path.relative_to(inv.attachments_dir).as_posix()}"
+                    try:
+                        tar.add(path, arcname=name, recursive=False)
+                    except FileNotFoundError:
+                        continue  # deleted meanwhile
 
 
 def download_snapshot(base_url: str, path: Path, progress: Callable[[int], None] | None = None) -> None:

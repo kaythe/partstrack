@@ -73,6 +73,25 @@ class SnapshotTest(unittest.TestCase):
                 copy.conn.execute("DELETE FROM parts")
         self.assertIsNone(read_copy_info(self.server.db_path))
 
+    def test_attachment_deleted_during_the_snapshot_is_left_out(self):
+        attachment = self.server.get_part(self.part_id).attachments[0]
+        add = tarfile.TarFile.add
+
+        def add_but_delete_the_attachment_first(tar, name, *args, **kwargs):
+            if Path(name) == attachment.path:  # deleted by another request just now
+                attachment.path.unlink()
+            return add(tar, name, *args, **kwargs)
+
+        with mock.patch.object(tarfile.TarFile, "add", add_but_delete_the_attachment_first):
+            archive = self.snapshot()  # still succeeds
+        with tarfile.open(archive) as tar:
+            names = tar.getnames()
+        self.assertIn("parts.db", names)
+        self.assertNotIn(f"attachments/{self.part_id}/ds.pdf", names)
+        db_path = unpack_copy(archive, self.dir / "copy", source="http://a/")
+        with Inventory(db_path, read_only=True) as copy:  # the part is there, its file is missing
+            self.assertFalse(copy.get_part(self.part_id).attachments[0].path.exists())
+
     def test_later_download_replaces_the_copy(self):
         folder = self.dir / "copy"
         unpack_copy(self.snapshot(), folder, source="http://a/")
