@@ -14,9 +14,12 @@
 #     You should have received a copy of the GNU General Public License
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import io
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from partstrack import __version__
 from partstrack.store import Inventory
@@ -96,6 +99,21 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(len(self.get("/api/history?limit=1")), 1)
         self.assertEqual([c["location"] for c in self.get("/api/history?location=/Bench&limit=0")], ["Bench"])
         self.assertIn("whole number", self.get("/api/history?limit=x", 400)["error"])
+
+    def test_snapshot(self):
+        temp = Path(self.tmp.name) / "temp"
+        temp.mkdir()
+        with mock.patch.object(tempfile, "tempdir", str(temp)):  # where the server builds the archive
+            response = self.client.get("/api/snapshot")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content_type, "application/gzip")
+        self.assertRegex(response.headers["Content-Disposition"], r"partstrack-\d{4}-\d\d-\d\d_\d{6}\.tar\.gz")
+        with tarfile.open(fileobj=io.BytesIO(response.get_data()), mode="r:gz") as tar:
+            names = tar.getnames()
+        self.assertIn("parts.db", names)
+        self.assertTrue(any(n.startswith("attachments/") and n.endswith("ds.pdf") for n in names))
+        response.close()
+        self.assertEqual(list(temp.iterdir()), [])  # nothing left behind
 
     def test_errors_are_json_and_writes_are_refused(self):
         self.assertIn("no such API endpoint", self.get("/api/nope", 404)["error"])

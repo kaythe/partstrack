@@ -25,10 +25,14 @@ web interface, never as file paths on the server.
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request, url_for
+import tempfile
+from datetime import datetime, timezone
+
+from flask import Blueprint, jsonify, request, send_file, url_for
 from werkzeug.exceptions import HTTPException
 
 from .. import __version__
+from ..snapshot import write_snapshot
 from ..store import Attachment, InventoryError, Location, NotFoundError, Part, StockChange
 from .app import inventory
 
@@ -68,6 +72,7 @@ def index():
             "/api/tags": "tags with the number of parts that have them",
             "/api/categories": "categories in use",
             "/api/history": "stock changes, newest first; filters: part (id), location, limit (default 50, 0 for all)",
+            "/api/snapshot": "the database and attachments as .tar.gz, for the desktop app's read-only copies",
         },
     )
 
@@ -113,6 +118,23 @@ def history():
         part_id, location=request.args.get("location") or None, limit=50 if limit is None else (limit or None)
     )
     return jsonify([_change(c) for c in changes])
+
+
+@api.get("/snapshot")
+def snapshot():
+    """The whole inventory as a .tar.gz (see partstrack.snapshot). It is built in an
+    anonymous temporary file, so large attachment folders don't have to fit in
+    memory; the system deletes the file when the server closes it after sending.
+    (A named file would stay behind: Werkzeug skips call_on_close for send_file.)"""
+    archive = tempfile.TemporaryFile(prefix="partstrack-snapshot-")
+    try:
+        write_snapshot(inventory(), archive)
+        archive.seek(0)
+    except BaseException:
+        archive.close()
+        raise
+    return send_file(archive, mimetype="application/gzip", as_attachment=True,
+                     download_name=datetime.now(timezone.utc).strftime("partstrack-%Y-%m-%d_%H%M%S.tar.gz"))
 
 
 def _number(name: str) -> int | None:

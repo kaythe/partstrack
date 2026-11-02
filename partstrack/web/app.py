@@ -59,6 +59,7 @@ from werkzeug.datastructures import FileStorage
 from .. import LOGO_PATH, REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import decode_csv, export_csv, import_csv
+from ..snapshot import open_inventory
 from ..labels import (
     CUSTOM_LAYOUT_NAMES,
     CUSTOM_SHEET_OPTIONS,
@@ -113,7 +114,7 @@ def create_app(db_path: str | Path, public_url: str | None = None) -> Flask:
 
 def inventory() -> Inventory:
     if "inventory" not in g:
-        g.inventory = Inventory(current_app.config["PARTSTRACK_DB"])
+        g.inventory = open_inventory(current_app.config["PARTSTRACK_DB"])
     return g.inventory
 
 
@@ -823,7 +824,7 @@ def main(argv: list[str] | None = None) -> int:
 
     db_path = args.db or default_db_path()
     try:
-        Inventory(db_path).close()  # create or upgrade the database once, before serving
+        open_inventory(db_path).close()  # create or upgrade the database once, before serving
         app = create_app(db_path, args.url)
     except InventoryError as e:
         print(f"error: {e}", file=sys.stderr)

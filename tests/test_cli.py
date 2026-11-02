@@ -22,6 +22,7 @@ from pathlib import Path
 
 from partstrack import __version__
 from partstrack.cli import build_parser, main
+from partstrack.store import Inventory
 
 
 class CliTest(unittest.TestCase):
@@ -79,6 +80,21 @@ class CommandTest(unittest.TestCase):
         self.assertIn("DIP-8", shown)
         self.assertIn("timer", shown)
         self.assertIn("Stock (total 0)", shown)
+
+    def test_copies_are_read_only(self):
+        from partstrack.snapshot import unpack_copy, write_snapshot
+
+        self.run_cli("add", "NE555", "-q", "5", "-l", "Box")
+        with Inventory(self.db) as inv:
+            write_snapshot(inv, Path(self.tmp.name) / "s.tar.gz")
+        copy = str(unpack_copy(Path(self.tmp.name) / "s.tar.gz", Path(self.tmp.name) / "copy", source="http://a/"))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(main(["--db", copy, "stock", "NE555", "Box", "-1"]), 1)
+            self.assertEqual(main(["--db", copy, "show", "NE555"]), 0)
+        self.assertIn("read-only copy", err.getvalue())
+        self.assertIn("Stock (total 5)", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

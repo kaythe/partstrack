@@ -292,6 +292,25 @@ The desktop app, the CLI and the web interface can all be used on the same
 database at the same time. The desktop app doesn't notice changes made
 elsewhere until you press F5 (View → Refresh).
 
+### Read-only copies of a server's inventory
+
+**File → Download copy from server…** downloads the inventory of a
+`partstrack-web` server, with its attachments, into a folder on this computer
+(by default `server-copy` next to the default database), for example to take
+it along on a laptop. Enter the web interface's address, the same one the
+label dialog uses.
+
+A copy always opens read-only, in the CLI too: everything that would change it
+is disabled, and the window title and status bar say where and when it was
+copied. This
+way no changes can be made that would be lost, because nothing goes back to
+the server. A later download into the same folder replaces the copy. The
+folder must be empty or hold an earlier copy, so no other database is ever
+overwritten. **File → Open database…** goes back to your own database.
+
+The server offers the copy at `/api/snapshot`, as a `.tar.gz` with the same
+layout as the backups below.
+
 ## Backups
 
 `contrib/systemd/` contains a backup script and a systemd timer that runs it
@@ -352,6 +371,8 @@ files keep the right owner:
 - `partstrack/csvio.py` contains CSV import/export on top of `Inventory`.
 - `partstrack/labels.py` computes label layouts and contents for both the web
   interface and the desktop app.
+- `partstrack/snapshot.py` makes, downloads and unpacks the read-only copies
+  of a server's inventory.
 - `partstrack/cli.py` is the command-line front end, a thin layer over `Inventory`.
 - `partstrack/web/` holds the web front end: a Flask app in `app.py`, the
   read-only JSON API in `api.py`, plus Jinja templates and a stylesheet.

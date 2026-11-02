@@ -433,6 +433,14 @@ def _search_words(query: str) -> list[str]:
         return query.split()
 
 
+def _schema_version(db_path: Path) -> int:
+    conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
 def _sql_si_number(text: object) -> float | None:
     return si_number(text) if isinstance(text, str) else None
 
@@ -491,17 +499,32 @@ class Inventory:
     # Downloads from this machine are refused (see _check_download_url); tests allow them.
     allow_local_downloads = False
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, read_only: bool = False):
+        """With `read_only`, every change raises InventoryError (e.g. for copies of
+        a server's inventory); the file must exist, and SQLite opens it read-only."""
         self.db_path = Path(db_path).expanduser()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
         self.attachments_dir = self.db_path.parent / "attachments"
-        self.conn = sqlite3.connect(self.db_path)
+        if read_only:
+            if not self.db_path.is_file():
+                raise NotFoundError(f"no database at {self.db_path}")
+            if _schema_version(self.db_path) < len(MIGRATIONS):
+                Inventory(self.db_path).close()  # upgrade it first; a read-only connection can't
+            self.conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.create_function("si_number", 1, _sql_si_number, deterministic=True)
         self._transaction_depth = 0
         self._after_commit: list[Callable[[], None]] = []
         self._after_rollback: list[Callable[[], None]] = []
-        self._migrate()
+        if read_only:
+            if self.conn.execute("PRAGMA user_version").fetchone()[0] > len(MIGRATIONS):
+                self.conn.close()
+                raise InventoryError(f"{self.db_path} was created by a newer version of partstrack")
+        else:
+            self._migrate()
         self.conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self) -> None:
@@ -542,6 +565,8 @@ class Inventory:
         Transactions can be nested: a failing inner block is undone on its own
         (using a savepoint), and only the outermost block commits.
         """
+        if self.read_only:
+            raise InventoryError("this is a read-only copy; changes can't be saved")
         depth = self._transaction_depth
         self._transaction_depth += 1
         try:

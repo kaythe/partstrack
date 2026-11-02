@@ -35,7 +35,9 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 import threading
+from functools import wraps
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QObject, QRectF, QSettings, QSizeF, QStringListModel, Qt, QTimer, QUrl, Signal
@@ -96,6 +98,7 @@ from PySide6.QtWidgets import (
 from .. import LOGO_PATH, REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import ImportResult, decode_csv, export_csv, import_csv
+from ..snapshot import TEMP_PREFIX, CopyInfo, download_snapshot, open_inventory, read_copy_info, unpack_copy
 from ..labels import (
     CUSTOM_LAYOUT_NAMES,
     CUSTOM_PRINTER,
@@ -152,6 +155,12 @@ EXPORT_FORMATS = {
     "Tab-separated (*.tsv)": ("\t", False),
 }
 ROLE_ID = Qt.ItemDataRole.UserRole
+READ_ONLY_MESSAGE = "This is a read-only copy of a server's inventory; it can't be changed."
+
+
+def server_url(settings: QSettings) -> str:
+    """The web interface's address, for label QR codes and for copies of its inventory."""
+    return settings.value("server/url", "") or settings.value("labels/url", "")  # older versions: labels/url
 HISTORY_IN_PART_VIEW = 10  # newest stock changes shown with a part
 
 
@@ -385,9 +394,85 @@ class Downloader(QObject):
         self.finished.emit(self, results)
 
 
+class CopyDownloader(QObject):
+    """Downloads a snapshot of a server's inventory to a file, in a worker thread.
+    Unpacking happens in the GUI thread, which may have to close the old copy first."""
+
+    progress = Signal(int)  # bytes received
+    finished = Signal(object, object)  # (this downloader, error message or None)
+
+    def __init__(self, url: str, folder: Path):
+        super().__init__()
+        self.url = url
+        self.folder = folder
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for leftover in folder.glob(TEMP_PREFIX + "download-*"):  # from a download cut short by quitting
+            leftover.unlink(missing_ok=True)
+        handle, name = tempfile.mkstemp(prefix=TEMP_PREFIX + "download-", suffix=".tar.gz", dir=folder)
+        os.close(handle)
+        self.archive = Path(name)
+
+    def start(self) -> None:
+        # A daemon thread, so quitting doesn't wait for a large download to finish.
+        threading.Thread(target=self._run, name="partstrack-copy", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            download_snapshot(self.url, self.archive, self.progress.emit)
+        except InventoryError as e:
+            self.finished.emit(self, str(e))
+        else:
+            self.finished.emit(self, None)
+
+
 # -- dialogs ------------------------------------------------------------------
 # Each dialog does its work in save(), inside a transaction, and stays open
 # with the user's input if that fails.
+
+
+class CopyDialog(QDialog):
+    """Asks for the server's address and the folder for a read-only copy."""
+
+    def __init__(self, url: str, folder: Path, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Download copy from server")
+        self.url = QLineEdit(url)
+        self.url.setPlaceholderText("e.g. http://parts.lan:8080/")
+        self.folder = QLineEdit(str(folder))
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(self.folder, 1)
+        folder_row.addWidget(browse)
+        note = QLabel("The copy opens read-only. A later download into the same folder replaces it.\n"
+                      "The folder must be empty or hold an earlier copy.")
+        note.setWordWrap(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Download")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form = QFormLayout(self)
+        form.addRow("Web interface:", self.url)
+        form.addRow("Folder:", folder_row)
+        form.addRow(note)
+        form.addRow(buttons)
+        self.resize(560, self.sizeHint().height())
+
+    def _browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Folder for the copy", self.folder.text())
+        if folder:
+            self.folder.setText(folder)
+
+    def accept(self) -> None:
+        try:
+            normalize_base_url(self.url.text())
+        except InventoryError as e:
+            show_error(self, e)
+            return
+        if not self.folder.text().strip():
+            show_error(self, "please choose a folder for the copy")
+            return
+        super().accept()
 
 
 class SavingDialog(QDialog):
@@ -889,7 +974,7 @@ class LabelDialog(QDialog):
         self.custom_box.setLayout(sizes)
         self.start = QSpinBox()
         self.start.setToolTip("Skip labels already used on the first sheet")
-        self.url = QLineEdit(settings.value("labels/url", ""))
+        self.url = QLineEdit(server_url(settings))
         self.url.setPlaceholderText("e.g. http://parts.lan:8080/")
         self.url.setToolTip("The address of partstrack-web as your phone reaches it; the QR codes link there")
         self.layout_combo.currentIndexChanged.connect(self._layout_changed)
@@ -993,7 +1078,7 @@ class LabelDialog(QDialog):
                   "QR codes. Print anyway?"):
             return None
         self.settings.setValue("labels/options", json.dumps(self.options()))
-        self.settings.setValue("labels/url", normalize_base_url(self.url.text()))
+        self.settings.setValue("server/url", normalize_base_url(self.url.text()))
         self.settings.setValue("labels/sublocations", "true" if self.sublocations.isChecked() else "false")
         return layout, labels
 
@@ -1087,6 +1172,7 @@ class PartView(QScrollArea):
                            ("Delete", self.main.delete_part)]:
             button = QPushButton(text)
             button.clicked.connect(lambda checked=False, slot=slot: slot())
+            button.setEnabled(not self.main.read_only)
             actions.append(button)
         layout.addLayout(button_row(*actions))
 
@@ -1206,6 +1292,8 @@ class PartView(QScrollArea):
         add_files.clicked.connect(lambda: self.main.attach_files())
         add_links = QPushButton("Add links…")
         add_links.clicked.connect(lambda: self.main.attach_links())
+        for button in (add_files, add_links):
+            button.setEnabled(not self.main.read_only)
         layout.addLayout(button_row(self.open_button, self.store_button, self.remove_button))
         layout.addLayout(button_row(add_files, add_links))
         self._update_attachment_buttons()
@@ -1230,14 +1318,31 @@ class PartView(QScrollArea):
 
     def _update_attachment_buttons(self) -> None:
         attachment = self.selected_attachment()
+        writable = not self.main.read_only
         self.open_button.setEnabled(attachment is not None)
-        self.remove_button.setEnabled(attachment is not None)
+        self.remove_button.setEnabled(writable and attachment is not None)
         self.store_button.setEnabled(
-            attachment is not None and attachment.url is not None and downloadable_name(attachment.url) is not None
+            writable and attachment is not None and attachment.url is not None
+            and downloadable_name(attachment.url) is not None
         )
 
 
 # -- main window --------------------------------------------------------------
+
+
+def writes(method):
+    """For MainWindow methods that change the inventory: on a read-only copy, they
+    only say so. (Their buttons are disabled too, but double-clicks and shortcuts
+    still reach them, and Inventory refuses the change anyway.)"""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if self.read_only:
+            self.statusBar().showMessage(READ_ONLY_MESSAGE)
+            return None
+        return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class MainWindow(QMainWindow):
@@ -1249,7 +1354,9 @@ class MainWindow(QMainWindow):
         self.inv: Inventory | None = None
         self.db_path = db_path
         self.current_part_id: int | None = None
+        self.copy_info: CopyInfo | None = None  # set while a read-only copy is open
         self._downloads: set[Downloader] = set()
+        self._copy_downloads: set[CopyDownloader] = set()
         self.resize(1200, 760)
 
         self.tabs = QTabWidget()
@@ -1257,6 +1364,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_locations_page(), "Locations")
         self.setCentralWidget(self.tabs)
         self._build_menus()
+        self.copy_label = QLabel()
+        self.copy_label.setStyleSheet("font-weight: bold")
+        self.statusBar().addPermanentWidget(self.copy_label)
 
         geometry = self.settings.value("window/geometry")
         if geometry is not None:
@@ -1327,12 +1437,15 @@ class MainWindow(QMainWindow):
         self.location_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.location_tree.itemDoubleClicked.connect(lambda: self.edit_location())
         buttons = []
+        self.location_write_buttons = []
         for text, slot in [("Add…", self.add_location), ("Edit…", self.edit_location),
                            ("Delete", self.delete_location), ("Show parts", self.show_location_parts),
                            ("Labels…", self.print_labels)]:
             button = QPushButton(text)
             button.clicked.connect(lambda checked=False, slot=slot: slot())
             buttons.append(button)
+            if text in ("Add…", "Edit…", "Delete"):
+                self.location_write_buttons.append(button)
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.addWidget(self.location_tree)
@@ -1350,8 +1463,9 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
         self._action(file_menu, "&Open database…", self.choose_database, QKeySequence.StandardKey.Open)
+        self._action(file_menu, "&Download copy from server…", self.choose_copy_download)
         file_menu.addSeparator()
-        self._action(file_menu, "&Import CSV…", self.choose_import)
+        self.import_action = self._action(file_menu, "&Import CSV…", self.choose_import)
         self._action(file_menu, "&Export CSV…", self.choose_export)
         file_menu.addSeparator()
         self._action(file_menu, "Print &labels…", self.print_labels, QKeySequence.StandardKey.Print)
@@ -1359,7 +1473,8 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "&Quit", self.close, QKeySequence.StandardKey.Quit)
 
         part_menu = self.menuBar().addMenu("&Part")
-        new_part = self._action(part_menu, "&New part…", self.new_part, QKeySequence.StandardKey.New)
+        new_part = self.new_part_action = self._action(part_menu, "&New part…", self.new_part,
+                                                       QKeySequence.StandardKey.New)
         self.part_actions = [
             self._action(part_menu, "&Edit…", self.edit_part, "Ctrl+E"),
             self._action(part_menu, "&Stock…", self.change_stock, "Ctrl+T"),
@@ -1405,8 +1520,10 @@ class MainWindow(QMainWindow):
     # -- database -------------------------------------------------------------
 
     def open_database(self, db_path: Path) -> bool:
+        """Open a database; copies of a server's inventory (see partstrack.snapshot) open read-only."""
+        copy_info = read_copy_info(Path(db_path))
         try:
-            inv = Inventory(db_path)
+            inv = open_inventory(db_path)
         except (InventoryError, sqlite3.Error, OSError) as e:
             show_error(self, f"cannot open {db_path}: {e}")
             return False
@@ -1414,10 +1531,77 @@ class MainWindow(QMainWindow):
             self.inv.close()
         self.inv = inv
         self.db_path = Path(db_path)
+        self.copy_info = copy_info
         self.current_part_id = None
-        self.setWindowTitle(f"partstrack – {self.db_path}")
+        if copy_info is None:
+            self.setWindowTitle(f"partstrack – {self.db_path}")
+            self.copy_label.clear()
+        else:
+            description = f"copy of {copy_info.source} from {copy_info.taken_at} UTC"
+            self.setWindowTitle(f"partstrack – {description} (read-only)")
+            self.copy_label.setText(f"Read-only {description}")
         self.refresh()
         return True
+
+    @property
+    def read_only(self) -> bool:
+        return self.inv is not None and self.inv.read_only
+
+    # -- copies of a server's inventory -----------------------------------------
+
+    def default_copy_folder(self) -> Path:
+        return Path(self.settings.value("copy/folder", "") or default_db_path().parent / "server-copy")
+
+    def choose_copy_download(self) -> None:
+        dialog = CopyDialog(server_url(self.settings), self.default_copy_folder(), self)
+        if run_dialog(dialog):
+            self.download_copy(dialog.url.text().strip(), Path(dialog.folder.text().strip()).expanduser())
+
+    def download_copy(self, url: str, folder: Path) -> None:
+        """Download a snapshot in the background; _copy_downloaded unpacks and opens it."""
+        if self._copy_downloads:
+            show_error(self, "A copy is already being downloaded.")
+            return
+        try:
+            downloader = CopyDownloader(url, folder)
+        except OSError as e:
+            show_error(self, f"cannot write to {folder}: {e.strerror}")
+            return
+        self.settings.setValue("server/url", url)
+        self.settings.setValue("copy/folder", str(folder))
+        downloader.progress.connect(self._copy_progress)  # queued: these run in the GUI thread
+        downloader.finished.connect(self._copy_downloaded)
+        self._copy_downloads.add(downloader)
+        self.statusBar().showMessage(f"Downloading a copy from {url}…")
+        downloader.start()
+
+    def _copy_progress(self, received: int) -> None:
+        self.statusBar().showMessage(f"Downloading a copy… {received / 1e6:.1f} MB")
+
+    def _copy_downloaded(self, downloader: CopyDownloader, error: str | None) -> None:
+        self._copy_downloads.discard(downloader)
+        try:
+            if error is not None:
+                show_error(self, error)
+                return
+            target = downloader.folder / "parts.db"
+            replacing_open_copy = self.inv is not None and self.db_path.resolve() == target.resolve()
+            if replacing_open_copy:  # the old copy's files are about to be replaced
+                self.inv.close()
+                self.inv = None
+            try:
+                db_path = unpack_copy(downloader.archive, downloader.folder, source=downloader.url)
+            except (InventoryError, OSError) as e:
+                show_error(self, f"The copy was not saved: {e}")
+                if replacing_open_copy:
+                    self.open_database(target)
+                return
+            self.statusBar().showMessage(f"Saved a copy of {downloader.url} in {downloader.folder}.")
+            if replacing_open_copy or confirm(self, "The copy was saved. Open it now?",
+                                              "It opens read-only. File → Open database… goes back to your own."):
+                self.open_database(db_path)
+        finally:
+            downloader.archive.unlink(missing_ok=True)
 
     def choose_database(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -1541,7 +1725,9 @@ class MainWindow(QMainWindow):
                 self.current_part_id = None
         self.part_view.show_part(part)
         for action in self.part_actions:
-            action.setEnabled(part is not None)
+            action.setEnabled(part is not None and not self.read_only)
+        for widget in [self.new_part_action, self.import_action, *self.location_write_buttons]:
+            widget.setEnabled(not self.read_only)
 
     def _part_selected(self) -> None:
         items = self.table.selectedItems()
@@ -1553,6 +1739,7 @@ class MainWindow(QMainWindow):
 
     # -- part actions ---------------------------------------------------------
 
+    @writes
     def new_part(self) -> None:
         dialog = PartDialog(self.inv, None, self)
         if run_dialog(dialog):
@@ -1560,6 +1747,7 @@ class MainWindow(QMainWindow):
             self.refresh()
             self.start_downloads(dialog.link_ids)
 
+    @writes
     def duplicate_part(self) -> None:
         part = self.current_part()
         if part is None:
@@ -1570,11 +1758,13 @@ class MainWindow(QMainWindow):
             self.refresh()
             self.start_downloads(dialog.link_ids)
 
+    @writes
     def edit_part(self) -> None:
         part = self.current_part()
         if part is not None and run_dialog(PartDialog(self.inv, part, self)):
             self.refresh()
 
+    @writes
     def delete_part(self) -> None:
         part = self.current_part()
         if part is None or not confirm(self, f"Delete {part.name} with its stock and attachments?"):
@@ -1582,11 +1772,13 @@ class MainWindow(QMainWindow):
         self.attempt(self.inv.delete_part, part.id)
         self.statusBar().showMessage(f"Deleted {part.name}.")
 
+    @writes
     def change_stock(self, *, location: str = "") -> None:
         part = self.current_part()
         if part is not None and run_dialog(StockDialog(self.inv, part, self, location=location)):
             self.refresh()
 
+    @writes
     def move_stock(self) -> None:
         part = self.current_part()
         if part is None:
@@ -1596,6 +1788,7 @@ class MainWindow(QMainWindow):
             self.refresh()
             self.statusBar().showMessage(f"Moved {dialog.moved}.")
 
+    @writes
     def attach_files(self) -> None:
         part = self.current_part()
         if part is None:
@@ -1606,6 +1799,7 @@ class MainWindow(QMainWindow):
             self.settings.setValue("last_dir", str(Path(paths[0]).parent))
             self.add_attachments(part.id, paths)
 
+    @writes
     def attach_links(self) -> None:
         part = self.current_part()
         if part is None:
@@ -1626,9 +1820,11 @@ class MainWindow(QMainWindow):
         if link_ids:
             self.start_downloads(link_ids)
 
+    @writes
     def store_locally(self, attachment: Attachment) -> None:
         self.start_downloads([attachment.id])
 
+    @writes
     def remove_attachment(self, attachment: Attachment) -> None:
         if confirm(self, f"Remove {attachment.original_name}?"):
             self.attempt(self.inv.remove_attachment, attachment.id)
@@ -1660,17 +1856,20 @@ class MainWindow(QMainWindow):
         item = self.location_tree.currentItem()
         return item.data(0, ROLE_ID) if item is not None else None
 
+    @writes
     def add_location(self) -> None:
         dialog = LocationDialog(self.inv, None, self, parent_path=self.selected_location_path() or "")
         if run_dialog(dialog):
             self.refresh()
 
+    @writes
     def edit_location(self) -> None:
         path = self.selected_location_path()
         location = next((l for l in self.inv.list_locations() if l.path == path), None)
         if location is not None and run_dialog(LocationDialog(self.inv, location, self)):
             self.refresh()
 
+    @writes
     def delete_location(self) -> None:
         path = self.selected_location_path()
         if path is not None and confirm(self, f"Delete the location {path}?"):
@@ -1697,6 +1896,7 @@ class MainWindow(QMainWindow):
                              part_ids=[part.id] if part else [])
         run_dialog(dialog)
 
+    @writes
     def choose_import(self) -> None:
         dialog = ImportDialog(self.inv.list_locations(), self.settings.value("last_dir", ""), self)
         if not run_dialog(dialog) or not dialog.path.text().strip():
@@ -1705,6 +1905,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("last_dir", str(path.parent))
         self.import_file(path, add_stock=dialog.add_stock.isChecked(), location=dialog.location.reference())
 
+    @writes
     def import_file(self, path: Path, *, add_stock: bool = False, location: str = "") -> ImportResult | None:
         """Check the file with a dry run, ask, then import it and download its links."""
         try:

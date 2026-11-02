@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A read-only JSON API in the web interface under `/api`: parts (with the
   same search and filters as the parts page), single parts, locations, tags,
   categories and the stock history.
+- Read-only copies of a server's inventory in the desktop app: File →
+  Download copy from server… downloads the database and attachments (served
+  at `/api/snapshot`) into a folder, and opens them read-only, so no changes
+  get made that would be lost. A later download replaces the copy.
 
 ### Changed
 

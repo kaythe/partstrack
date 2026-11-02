@@ -26,6 +26,7 @@ from pathlib import Path
 
 from . import __version__
 from .csvio import decode_csv, export_csv, import_csv
+from .snapshot import open_inventory
 from .store import ATTACHMENT_KINDS, EDITABLE_FIELDS, NEW_PART_NOTE, Inventory, InventoryError, Part
 
 
@@ -547,7 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        with Inventory(args.db or default_db_path()) as inv:
+        with open_inventory(args.db or default_db_path()) as inv:
             args.func(inv, args)
     except InventoryError as e:
         print(f"error: {e}", file=sys.stderr)

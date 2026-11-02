@@ -346,6 +346,82 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(self.table_names(), [])
         self.assertIn("not a number", self.window.statusBar().currentMessage())
 
+    def wait_for_copy(self):
+        deadline = time.monotonic() + 10
+        while self.window._copy_downloads and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(0.01)
+        self.assertFalse(self.window._copy_downloads, "the copy download did not finish")
+
+    def test_download_copy_from_server(self):
+        from partstrack.snapshot import write_snapshot
+
+        with self.inventory() as server:
+            part_id = server.add_part("NE555")
+            server.set_stock(part_id, "Box", 5)
+            write_snapshot(server, self.dir / "snapshot.tar.gz")
+            server.add_part("LM358")
+            write_snapshot(server, self.dir / "snapshot2.tar.gz")
+        folder = self.dir / "copy"
+        routes = {"/api/snapshot": (200, "application/gzip", (self.dir / "snapshot.tar.gz").read_bytes())}
+        with serve(routes) as url:
+            self.window.download_copy(url, folder)
+            self.wait_for_copy()
+            self.assertEqual(self.errors, [])
+            self.assertEqual(self.window.db_path, folder / "parts.db")  # opened, after confirm() said yes
+            self.assertTrue(self.window.read_only)
+            self.assertIn("(read-only)", self.window.windowTitle())
+            self.assertIn(url, self.window.copy_label.text())
+            self.assertEqual(self.table_names(), ["NE555"])
+
+            self.window.current_part_id = part_id
+            self.window.refresh()
+            self.assertFalse(any(a.isEnabled() for a in self.window.part_actions))
+            self.assertFalse(self.window.new_part_action.isEnabled())
+            self.assertFalse(any(b.isEnabled() for b in self.window.location_write_buttons))
+            self.window.edit_part()  # e.g. by double-click: refused without a dialog
+            self.assertIn("read-only copy", self.window.statusBar().currentMessage())
+            self.window.attempt(self.window.inv.delete_part, part_id)
+            self.assertIn("read-only copy", self.errors[-1])
+
+            # A later download replaces the copy that is open.
+            routes["/api/snapshot"] = (200, "application/gzip", (self.dir / "snapshot2.tar.gz").read_bytes())
+            self.window.download_copy(url, folder)
+            self.wait_for_copy()
+            self.assertEqual(self.table_names(), ["LM358", "NE555"])
+            self.assertTrue(self.window.read_only)
+            self.assertEqual([p.name for p in folder.iterdir() if p.name.startswith(".partstrack-")], [])
+
+        self.assertTrue(self.window.open_database(self.db))  # back to the own database: writable
+        self.assertFalse(self.window.read_only)
+        self.assertTrue(self.window.new_part_action.isEnabled())
+        self.assertEqual(self.window.copy_label.text(), "")
+
+    def test_copy_errors_keep_the_open_database(self):
+        (self.dir / "mine").mkdir()
+        (self.dir / "mine" / "notes.txt").write_text("mine")
+        with serve({}) as url:
+            self.window.download_copy(url, self.dir / "copy")
+            self.wait_for_copy()
+            self.assertIn("partstrack server", self.errors[-1])
+        with self.inventory() as server:
+            from partstrack.snapshot import write_snapshot
+            write_snapshot(server, self.dir / "snapshot.tar.gz")
+        with serve({"/api/snapshot": (200, "application/gzip", (self.dir / "snapshot.tar.gz").read_bytes())}) as url:
+            self.window.download_copy(url, self.dir / "mine")
+            self.wait_for_copy()
+        self.assertIn("contains other files", self.errors[-1])
+        self.assertEqual(self.window.db_path, self.db)
+        self.assertFalse(self.window.read_only)
+        self.assertEqual(sorted(p.name for p in (self.dir / "mine").iterdir()), ["notes.txt"])
+
+    def test_server_address_is_shared_with_labels(self):
+        self.window.settings.setValue("labels/url", "http://old.lan/")  # saved by an older version
+        self.assertEqual(desktop.server_url(self.window.settings), "http://old.lan/")
+        dialog = desktop.LabelDialog(self.window.inv, self.window.settings, self.window)
+        self.addCleanup(dialog.deleteLater)
+        self.assertEqual(dialog.url.text(), "http://old.lan/")
+
     def test_attachments_from_the_part_view(self):
         with serve({"/ds.pdf": (200, "application/pdf", b"%PDF")}) as base:
             with self.inventory() as inv:
