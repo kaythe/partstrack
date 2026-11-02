@@ -76,6 +76,29 @@ whose download fails; you get a warning and can retry later with
 safety, files are never downloaded from the server itself or from link-local
 addresses.
 
+## Searching by attribute
+
+Search words of the form `key=value`, `key:text`, `key<value`, `key<=value`,
+`key>value` and `key>=value` filter on an attribute instead of searching all
+text. They work everywhere you can search (CLI, web interface, desktop app) and
+combine with other words and filters:
+
+```sh
+partstrack search 'resistance>=10k' smd   # quote <, > and spaces in the shell
+partstrack search 'resistance=4k7'        # also matches 4.7k, 4700, 4.7 kΩ
+partstrack search 'capacitance<=100n' 'voltage>=25V'
+partstrack search vcc:16                  # the attribute value contains "16"
+partstrack search vcc:                    # parts that have a vcc attribute
+partstrack search '"forward voltage"<1V'  # keys with spaces go in double quotes
+```
+
+Keys and text compare case-insensitively. `=` matches the whole value, as text
+or as a number. `<`, `<=`, `>` and `>=` compare numbers, which may have a
+decimal comma, an SI prefix (p, n, u or µ, m, k or K, M, G, T) and a unit
+(ignored): `10k`, `100nF`, `3,3V`, `1MHz`. Resistor codes such as `4k7`, `2R2`
+and `R47` work too. Values that are not a single number, like `4.5-16V`, never
+match a comparison; use `:` for those.
+
 ## Low stock and history
 
 ```sh

@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a part's web page, or Part → Duplicate… (Ctrl+D) in the desktop app. The
   copy gets the fields, tags, attributes and minimum quantity, but no stock
   or attachments; the web and desktop forms let you change it before saving.
+- Searching by attribute: search words like `resistance>=10k`,
+  `capacitance=100n`, `vcc:16` or `vcc:` filter on attributes, comparing
+  numbers with SI prefixes and units (`4k7`, `100nF`, `3,3V`). This works in
+  the CLI, the web interface and the desktop app.
 
 ### Changed
 

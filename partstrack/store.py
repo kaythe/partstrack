@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import re
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -386,6 +388,55 @@ def _download(url: str, dest: Path, *, allow_local: bool) -> None:
         raise InventoryError(f"downloading {url} failed: {e}") from None
 
 
+SI_PREFIXES = {
+    "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6, "m": 1e-3,
+    "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12,
+}
+_NUMBER = re.compile(r"([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[eE][+-]?\d+)?)\s*(\S*)")
+# Resistor-style codes, where the prefix (or R for none) marks the decimal point: 4k7, 2R2, R47.
+_CODE = re.compile(r"(\d*)([pnuµμmkKMGTRr])(\d+)(\S*)")
+_UNIT = re.compile(r"[^\W\d_]*[%°]?[^\W\d_]*")  # letters (Ω, °C and % included), no digits
+
+
+def si_number(text: str) -> float | None:
+    """The value of a number with an optional SI prefix and unit, e.g. '4.7k',
+    '100 nF', '3,3V', '4k7' or '2R2'; None for anything else (e.g. '4.5-16V').
+    The unit is ignored. Results are rounded to 12 significant digits, so equal
+    values written differently ('100n', '0.1u') compare equal."""
+    text = text.strip()
+    if match := _CODE.fullmatch(text):
+        whole, prefix, fraction, unit = match.groups()
+        if (whole or prefix in "Rr") and _UNIT.fullmatch(unit) and unit[:1] not in SI_PREFIXES:
+            value = float(f"{whole or 0}.{fraction}") * SI_PREFIXES.get(prefix, 1.0)
+            return float(f"{value:.12g}")
+    match = _NUMBER.fullmatch(text)
+    if not match:
+        return None
+    number, suffix = match.groups()
+    factor = 1.0
+    if suffix[:1] in SI_PREFIXES:
+        factor, suffix = SI_PREFIXES[suffix[0]], suffix[1:]
+    if not _UNIT.fullmatch(suffix):
+        return None
+    return float(f"{float(number.replace(',', '.')) * factor:.12g}")
+
+
+# A search word that filters on an attribute: key, operator, value.
+_ATTRIBUTE_FILTER = re.compile(r"([^=<>:]+?)(>=|<=|=|<|>|:)(.*)", re.DOTALL)
+
+
+def _search_words(query: str) -> list[str]:
+    """Split a search into words; quotes group words, e.g. '"forward voltage"<1V'."""
+    try:
+        return shlex.split(query)
+    except ValueError:  # unbalanced quotes: take the words as they are
+        return query.split()
+
+
+def _sql_si_number(text: object) -> float | None:
+    return si_number(text) if isinstance(text, str) else None
+
+
 def _like_pattern(text: str) -> str:
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
@@ -446,6 +497,7 @@ class Inventory:
         self.attachments_dir = self.db_path.parent / "attachments"
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function("si_number", 1, _sql_si_number, deterministic=True)
         self._transaction_depth = 0
         self._after_commit: list[Callable[[], None]] = []
         self._after_rollback: list[Callable[[], None]] = []
@@ -676,12 +728,21 @@ class Inventory:
         """Return matching parts, sorted by name.
 
         Every word of `query` must appear (case-insensitively) in the part's
-        text fields, tags or attribute values. `location` also matches parts
+        text fields, tags or attribute values. Words like 'key=value' filter
+        on an attribute instead (see _attribute_filter): '=' (equal, also as
+        numbers), ':' (contains; 'key:' alone means the attribute exists), and
+        '<', '<=', '>', '>=' (compare numbers with SI prefixes, see si_number).
+        Quotes group words, e.g. '"forward voltage"<1V'. `location` also matches parts
         stored in its sublocations. `low` keeps only parts whose total stock
         is below their minimum quantity.
         """
         where, params = [], []
-        for word in query.split():
+        for word in _search_words(query):
+            if match := _ATTRIBUTE_FILTER.fullmatch(word):
+                condition, values = self._attribute_filter(*match.groups())
+                where.append(condition)
+                params += values
+                continue
             pattern = _like_pattern(word)
             where.append(
                 "("
@@ -717,6 +778,24 @@ class Inventory:
         if where:
             sql += " WHERE " + " AND ".join(where)
         return self._load_parts(sql, params)
+
+    @staticmethod
+    def _attribute_filter(key: str, operator: str, value: str) -> tuple[str, list]:
+        """SQL condition and parameters for one attribute filter of list_parts."""
+        key, value = key.strip(), value.strip()
+        condition = "EXISTS (SELECT 1 FROM attributes a WHERE a.part_id = p.id AND a.key = ? AND "
+        if operator == ":":
+            return condition + "a.value LIKE ? ESCAPE '\\')", [key, _like_pattern(value)]
+        if not value:
+            raise InventoryError(f"'{key}{operator}' needs a value to compare with")
+        number = si_number(value)
+        if operator == "=":
+            if number is None:
+                return condition + "a.value = ? COLLATE NOCASE)", [key, value]
+            return condition + "(a.value = ? COLLATE NOCASE OR si_number(a.value) = ?))", [key, value, number]
+        if number is None:
+            raise InventoryError(f"'{key}{operator}{value}': '{value}' is not a number")
+        return condition + f"si_number(a.value) {operator} ?)", [key, number]
 
     # -- tags and attributes -------------------------------------------------
 

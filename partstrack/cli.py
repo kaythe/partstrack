@@ -406,7 +406,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--link", action="store_true", help=LINK_HELP)
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("list", aliases=["ls", "search"], help="list or search parts")
+    p = sub.add_parser("list", aliases=["ls", "search"], help="list or search parts",
+                       description="Words like KEY=VALUE, KEY:TEXT, KEY<VALUE, KEY<=VALUE, KEY>VALUE and "
+                                   "KEY>=VALUE filter on an attribute: = is equal (also as numbers), : contains "
+                                   "(KEY: alone means the part has the attribute), and the others compare "
+                                   "numbers. Numbers may have SI prefixes and units: 10k, 4k7, 100nF, 3.3V. "
+                                   "Quote such words in the shell, e.g. 'vcc<5V'.")
     p.add_argument("query", nargs="*", help="words that must all match (name, MPN, tags, attributes, ...)")
     p.add_argument("-t", "--tag", help="only parts with this tag")
     p.add_argument("-l", "--location", help="only parts stored at this location or inside it")

@@ -211,6 +211,14 @@ class WebTest(unittest.TestCase):
         with self.inventory() as inv:
             self.assertEqual(len(inv.list_parts()), 2)
 
+    def test_attribute_search(self):
+        self.add_part(attributes="resistance = 4k7")
+        self.add_part(name="R2", attributes="resistance = 10k")
+        page = self.client.get("/?q=resistance>=10k").get_data(as_text=True)
+        self.assertIn(">R2</a>", page)
+        self.assertNotIn(">NE555</a>", page)
+        self.assertIn("is not a number", self.client.get("/?q=resistance<lots").get_data(as_text=True))
+
     def test_edit_part_replaces_tags_and_attributes(self):
         self.add_part()
         with self.inventory() as inv:

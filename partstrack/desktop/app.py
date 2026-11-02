@@ -1269,7 +1269,9 @@ class MainWindow(QMainWindow):
 
     def _build_parts_page(self) -> QWidget:
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search name, description, MPN, tags, attributes…")
+        self.search.setPlaceholderText("Search name, description, MPN, tags, attributes… or e.g. resistance>=10k")
+        self.search.setToolTip("Words must all match. key=value, key:text, key<value, key>=value etc. filter on "
+                               "an attribute; numbers may have SI prefixes (10k, 100n).")
         self.search.setClearButtonEnabled(True)
         self.search_timer = QTimer(self, singleShot=True, interval=250)
         self.search_timer.timeout.connect(self.refresh_parts)

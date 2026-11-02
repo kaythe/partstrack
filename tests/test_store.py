@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from partstrack.store import MIGRATIONS, Inventory, InventoryError, NotFoundError
+from partstrack.store import MIGRATIONS, Inventory, InventoryError, NotFoundError, si_number
 
 
 class InventoryTest(unittest.TestCase):
@@ -269,6 +269,43 @@ class InventoryTest(unittest.TestCase):
         with self.assertRaises(InventoryError):
             self.inv.duplicate_part(source, "ne555")
         self.assertEqual(len(self.inv.list_parts()), 2)  # the failed copy left nothing behind
+
+    def test_si_number(self):
+        for text, value in [("10k", 1e4), ("10 kΩ", 1e4), ("10K", 1e4), ("4k7", 4700), ("2R2", 2.2), ("R47", 0.47),
+                            ("100nF", 1e-7), ("0.1u", 1e-7), ("3,3V", 3.3), ("3300mV", 3.3), ("1M", 1e6),
+                            ("1m", 1e-3), ("-40°C", -40), ("10%", 10), ("1e3", 1000), ("2.2µF", 2.2e-6)]:
+            with self.subTest(text=text):
+                self.assertEqual(si_number(text), value)
+        for text in ["4.5-16V", "1/4W", "12V DC", "DIP-8", "abc", "k", "", "4k7k"]:
+            with self.subTest(text=text):
+                self.assertIsNone(si_number(text))
+
+    def test_attribute_search(self):
+        for name, attributes in [("R1", {"Resistance": "4k7", "Power": "1/4W"}), ("R2", {"resistance": "10 kΩ"}),
+                                 ("R3", {"resistance": "1M"}), ("C1", {"capacitance": "100nF"}),
+                                 ("U1", {"Vcc": "4.5-16V", "forward voltage": "0.7V"}), ("U2", {"vcc": "3,3V"})]:
+            part_id = self.inv.add_part(name)
+            self.inv.set_attributes(part_id, attributes)
+            self.inv.add_tags(part_id, ["smd"] if name != "R3" else ["tht"])
+        names = lambda query, **kwargs: [p.name for p in self.inv.list_parts(query, **kwargs)]
+        self.assertEqual(names("resistance>=10k"), ["R2", "R3"])
+        self.assertEqual(names("resistance<10k"), ["R1"])
+        self.assertEqual(names("resistance<=10000 resistance>4.7k"), ["R2"])
+        self.assertEqual(names("RESISTANCE=10000"), ["R2"])
+        self.assertEqual(names("resistance=4.7k"), ["R1"])
+        self.assertEqual(names("capacitance=0.1u"), ["C1"])
+        self.assertEqual(names("vcc<5"), ["U2"])  # "4.5-16V" isn't a number
+        self.assertEqual(names("vcc=4.5-16v"), ["U1"])
+        self.assertEqual(names("vcc:16"), ["U1"])
+        self.assertEqual(names("vcc:"), ["U1", "U2"])
+        self.assertEqual(names("power:1/4"), ["R1"])
+        self.assertEqual(names('"forward voltage"<1V'), ["U1"])
+        self.assertEqual(names("resistance>1k", tag="smd"), ["R1", "R2"])
+        self.assertEqual(names("resistance>1k 1M"), ["R3"])  # combined with a plain word
+        self.assertEqual(names('unbalanced "quote'), [])
+        for query in ["vcc<five", "vcc>=", "vcc="]:
+            with self.subTest(query=query), self.assertRaises(InventoryError):
+                self.inv.list_parts(query)
 
     def test_low_stock(self):
         low = self.inv.add_part("NE555")

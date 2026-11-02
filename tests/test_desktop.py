@@ -333,6 +333,19 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual((copy.name, copy.package, copy.tags, copy.min_quantity, copy.stock),
                          ("NE556", "DIP-8", ["timer"], 5, []))
 
+    def test_attribute_search(self):
+        with self.inventory() as inv:
+            inv.set_attributes(inv.add_part("R1"), {"resistance": "4k7"})
+            inv.set_attributes(inv.add_part("R2"), {"resistance": "10k"})
+        self.window.refresh()
+        self.window.search.setText("resistance>=10k")
+        self.window.refresh_parts()
+        self.assertEqual(self.table_names(), ["R2"])
+        self.window.search.setText("resistance>=lots")
+        self.window.refresh_parts()
+        self.assertEqual(self.table_names(), [])
+        self.assertIn("not a number", self.window.statusBar().currentMessage())
+
     def test_attachments_from_the_part_view(self):
         with serve({"/ds.pdf": (200, "application/pdf", b"%PDF")}) as base:
             with self.inventory() as inv:

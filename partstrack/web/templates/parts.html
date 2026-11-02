@@ -24,7 +24,8 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
 </div>
 
 <form class="filters" method="get">
-  <input type="search" name="q" value="{{ filters.q }}" placeholder="Search name, MPN, tags, attributes…" aria-label="Search">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Search name, MPN, tags, attributes… or e.g. resistance>=10k" aria-label="Search"
+         title="Words must all match. key=value, key:text, key<value, key>=value etc. filter on an attribute; numbers may have SI prefixes (10k, 100n).">
   <select name="category" aria-label="Category">
     <option value="">All categories</option>
     {% for c in categories %}<option {% if c == filters.category %}selected{% endif %}>{{ c }}</option>{% endfor %}
