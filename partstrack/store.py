@@ -611,42 +611,45 @@ class Inventory:
         raise NotFoundError(f"no part '{ref}'")
 
     def get_part(self, part_id: int) -> Part:
-        row = self.conn.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
-        if row is None:
+        parts = self._load_parts("SELECT ?", [part_id])
+        if not parts:
             raise NotFoundError(f"no part with id {part_id}")
-        part = Part(**dict(row))
-        part.stock = sorted(
-            (
-                StockEntry(r["path"], r["quantity"])
-                for r in self.conn.execute(
-                    LOCATION_PATHS + "SELECT lp.path, s.quantity FROM stock s"
-                    " JOIN location_paths lp ON lp.id = s.location_id WHERE s.part_id = ?",
-                    (part_id,),
-                )
-            ),
-            key=lambda s: _path_key(s.location),
-        )
-        part.tags = [
-            r["name"]
-            for r in self.conn.execute(
-                "SELECT t.name FROM part_tags pt JOIN tags t ON t.id = pt.tag_id"
-                " WHERE pt.part_id = ? ORDER BY t.name",
-                (part_id,),
-            )
-        ]
-        part.attributes = {
-            r["key"]: r["value"]
-            for r in self.conn.execute(
-                "SELECT key, value FROM attributes WHERE part_id = ? ORDER BY key", (part_id,)
-            )
+        return parts[0]
+
+    def _load_parts(self, ids_sql: str, params: list) -> list[Part]:
+        """Load the parts whose ids `ids_sql` (a SELECT of one column) returns, sorted
+        by name, with their stock, tags, attributes and attachments. It runs one query
+        per table however many parts there are, so long lists stay fast."""
+        where = f" IN ({ids_sql})"
+        parts = {
+            r["id"]: Part(**dict(r))
+            for r in self.conn.execute(f"SELECT * FROM parts WHERE id{where} ORDER BY name", params)
         }
-        part.attachments = [
-            self._attachment_from_row(r)
-            for r in self.conn.execute(
-                "SELECT * FROM attachments WHERE part_id = ? ORDER BY kind, id", (part_id,)
-            )
-        ]
-        return part
+        if not parts:
+            return []
+        for r in self.conn.execute(
+            LOCATION_PATHS + "SELECT s.part_id, lp.path, s.quantity FROM stock s"
+            f" JOIN location_paths lp ON lp.id = s.location_id WHERE s.part_id{where}",
+            params,
+        ):
+            parts[r["part_id"]].stock.append(StockEntry(r["path"], r["quantity"]))
+        for r in self.conn.execute(
+            "SELECT pt.part_id, t.name FROM part_tags pt JOIN tags t ON t.id = pt.tag_id"
+            f" WHERE pt.part_id{where} ORDER BY t.name",
+            params,
+        ):
+            parts[r["part_id"]].tags.append(r["name"])
+        for r in self.conn.execute(
+            f"SELECT part_id, key, value FROM attributes WHERE part_id{where} ORDER BY key", params
+        ):
+            parts[r["part_id"]].attributes[r["key"]] = r["value"]
+        for r in self.conn.execute(
+            f"SELECT * FROM attachments WHERE part_id{where} ORDER BY kind, id", params
+        ):
+            parts[r["part_id"]].attachments.append(self._attachment_from_row(r))
+        for part in parts.values():
+            part.stock.sort(key=lambda s: _path_key(s.location))
+        return list(parts.values())
 
     def list_parts(
         self,
@@ -700,8 +703,7 @@ class Inventory:
         sql = "SELECT p.id FROM parts p"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY p.name"
-        return [self.get_part(r["id"]) for r in self.conn.execute(sql, params).fetchall()]
+        return self._load_parts(sql, params)
 
     # -- tags and attributes -------------------------------------------------
 

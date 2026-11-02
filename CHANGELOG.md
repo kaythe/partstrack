@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a start position for partly used sheets. `partstrack-web --url` sets the
   address in the codes. The `web` and `desktop` extras now include `segno`.
 
+### Changed
+
+- Listing and searching parts is much faster for large inventories (about
+  ten times for 2000 parts), in all front ends and the CSV export.
+
 ## [1.0.0] - 2026-10-30
 
 First stable release.

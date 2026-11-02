@@ -225,6 +225,33 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(self.inv.location_path("strasse"), "STRASSE")
         self.assertEqual(self.inv.location_path("straße"), "Straße")
 
+    def test_list_parts_uses_a_fixed_number_of_queries(self):
+        def queries_for_listing():
+            statements = []
+            self.inv.conn.set_trace_callback(statements.append)
+            try:
+                parts = self.inv.list_parts()
+            finally:
+                self.inv.conn.set_trace_callback(None)
+            return len(parts), len(statements)
+
+        for i in range(2):
+            part_id = self.inv.add_part(f"Part {i}")
+            self.inv.add_tags(part_id, ["smd"])
+            self.inv.set_attribute(part_id, "value", str(i))
+            self.inv.set_stock(part_id, f"Cabinet/Drawer {i}", 1)
+        few = queries_for_listing()
+        for i in range(2, 20):
+            part_id = self.inv.add_part(f"Part {i}")
+            self.inv.add_tags(part_id, ["smd"])
+            self.inv.set_stock(part_id, f"Cabinet/Drawer {i}", 1)
+        many = queries_for_listing()
+        self.assertEqual((few[0], many[0]), (2, 20))
+        self.assertEqual(few[1], many[1])
+        part = self.inv.list_parts("Part 1")[0]
+        self.assertEqual((part.tags, part.attributes, [s.location for s in part.stock]),
+                         (["smd"], {"value": "1"}, ["Cabinet/Drawer 1"]))
+
     def test_low_stock(self):
         low = self.inv.add_part("NE555")
         empty = self.inv.add_part("LM358")
