@@ -116,6 +116,24 @@ class CsvTest(unittest.TestCase):
             self.import_text("name,notes\nA," + "x" * 200_000 + "\n")
         self.assertEqual(self.inv.list_parts(), [])
 
+    def test_min_quantity_and_history_note(self):
+        part_id = self.inv.add_part("NE555")
+        self.inv.set_min_quantity(part_id, 10)
+        self.inv.set_stock(part_id, "Box", 3)
+        self.inv.set_stock(part_id, "Bench", 1)
+        out = io.StringIO()
+        export_csv(self.inv, out)
+        other = Inventory(self.dir / "b" / "parts.db")
+        self.addCleanup(other.close)
+        self.import_text(out.getvalue(), other, note="CSV import: parts.csv")
+        part = other.get_part(other.find_part("NE555"))
+        self.assertEqual((part.min_quantity, part.total_quantity), (10, 4))
+        self.assertEqual({c.note for c in other.stock_history()}, {"CSV import: parts.csv"})
+        self.import_text("name,quantity\nNE555,5\n", other, default_location="Box")  # empty: kept
+        self.assertEqual(other.get_part(part.id).min_quantity, 10)
+        with self.assertRaises(InventoryError):
+            self.import_text("name,minimum\nNE555,-1\n")
+
 
 if __name__ == "__main__":
     unittest.main()

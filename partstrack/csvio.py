@@ -19,7 +19,8 @@
 The CSV has one row per part and location, so a part stored in two places
 takes two rows (a part without stock gets one row with an empty location).
 Tags and attachments are separated by ';' within a cell, and every attribute
-gets its own column named 'attr:<name>'.
+gets its own column named 'attr:<name>'. Like the other part fields,
+'min_quantity' is repeated on every row of a part.
 
 Importing matches parts by name: new parts are created, existing ones are
 updated. Empty cells never clear existing values, so a CSV with only some
@@ -39,7 +40,7 @@ from .store import EDITABLE_FIELDS, LOCATION_SEPARATOR, Inventory, InventoryErro
 
 COLUMNS = [
     "name", "description", "manufacturer", "mpn", "category", "package",
-    "location", "quantity", "tags", "datasheets", "images", "other_attachments", "notes",
+    "location", "quantity", "min_quantity", "tags", "datasheets", "images", "other_attachments", "notes",
 ]
 ATTRIBUTE_PREFIX = "attr:"
 LIST_SEPARATOR = ";"
@@ -49,6 +50,8 @@ ATTACHMENT_COLUMNS = {"datasheets": "datasheet", "images": "image", "other_attac
 HEADER_ALIASES = {
     "qty": "quantity",
     "amount": "quantity",
+    "minimum": "min_quantity",
+    "min qty": "min_quantity",
     "part number": "mpn",
     "manufacturer part number": "mpn",
     "mfr": "manufacturer",
@@ -98,6 +101,7 @@ def export_csv(inv: Inventory, stream: TextIO, *, delimiter: str = ",") -> int:
                 # location that merely ends with the same name.
                 "location": LOCATION_SEPARATOR + entry.location if entry else "",
                 "quantity": entry.quantity if entry else "",
+                "min_quantity": "" if part.min_quantity is None else part.min_quantity,
                 "tags": LIST_SEPARATOR.join(part.tags),
                 **attachments,
             }
@@ -126,6 +130,7 @@ def import_csv(
     delimiter: str | None = None,
     dry_run: bool = False,
     allow_files: bool = True,
+    note: str = "CSV import",
 ) -> ImportResult:
     """Import parts from CSV. Either every row is imported or, on error, nothing.
 
@@ -137,6 +142,8 @@ def import_csv(
     Set `allow_files=False` when the CSV comes from someone who must not be
     able to read files on this machine (e.g. a web upload): only links are
     then imported as attachments, and file paths are skipped.
+
+    Stock changes are recorded in the stock history with `note`.
     """
     text = stream.read()
     reader = csv.DictReader(io.StringIO(text), delimiter=delimiter or _guess_delimiter(text))
@@ -164,7 +171,7 @@ def import_csv(
                 if not any(values.values()):
                     continue
                 try:
-                    _import_row(inv, values, result, base_dir, add_stock, default_location, allow_files)
+                    _import_row(inv, values, result, base_dir, add_stock, default_location, allow_files, note)
                 except InventoryError as e:
                     raise InventoryError(f"line {reader.line_num}: {e}") from None
                 result.rows += 1
@@ -189,6 +196,7 @@ def _import_row(
     add_stock: bool,
     default_location: str | None,
     allow_files: bool,
+    note: str,
 ) -> None:
     name = values.get("name", "")
     if not name:
@@ -215,9 +223,11 @@ def _import_row(
             raise InventoryError("quantity given but no location (set a default location for such rows)")
         if add_stock:
             if quantity:
-                inv.adjust_stock(part_id, location, quantity)
+                inv.adjust_stock(part_id, location, quantity, note=note)
         else:
-            inv.set_stock(part_id, location, quantity)
+            inv.set_stock(part_id, location, quantity, note=note)
+    if values.get("min_quantity"):
+        inv.set_min_quantity(part_id, _parse_quantity(values["min_quantity"], "minimum quantity"))
 
     for column, kind in ATTACHMENT_COLUMNS.items():
         for source in _split_list(values.get(column, "")):
@@ -253,13 +263,13 @@ def _split_list(text: str) -> list[str]:
     return [item.strip() for item in text.split(LIST_SEPARATOR) if item.strip()]
 
 
-def _parse_quantity(text: str) -> int:
+def _parse_quantity(text: str, what: str = "quantity") -> int:
     try:
         number = float(text)
     except ValueError:
-        raise InventoryError(f"invalid quantity '{text}'") from None
+        raise InventoryError(f"invalid {what} '{text}'") from None
     if not number.is_integer():
-        raise InventoryError(f"quantity must be a whole number, got '{text}'")
+        raise InventoryError(f"{what} must be a whole number, got '{text}'")
     return int(number)
 
 

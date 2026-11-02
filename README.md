@@ -63,6 +63,7 @@ partstrack detach 3                       # attachment id from `show`
 partstrack download                       # store all linked files locally
 partstrack download NE555 --dry-run       # ... or one part's; just list them
 partstrack tags
+partstrack copy NE555 NE556                # same fields, tags and attributes; no stock or attachments
 partstrack rm NE555
 ```
 
@@ -74,6 +75,46 @@ whose download fails; you get a warning and can retry later with
 `partstrack download`. Use `--link` to keep a link to a file as a link. For
 safety, files are never downloaded from the server itself or from link-local
 addresses.
+
+## Searching by attribute
+
+Search words of the form `key=value`, `key:text`, `key<value`, `key<=value`,
+`key>value` and `key>=value` filter on an attribute instead of searching all
+text. They work everywhere you can search (CLI, web interface, desktop app) and
+combine with other words and filters:
+
+```sh
+partstrack search 'resistance>=10k' smd   # quote <, > and spaces in the shell
+partstrack search 'resistance=4k7'        # also matches 4.7k, 4700, 4.7 kΩ
+partstrack search 'capacitance<=100n' 'voltage>=25V'
+partstrack search vcc:16                  # the attribute value contains "16"
+partstrack search vcc:                    # parts that have a vcc attribute
+partstrack search '"forward voltage"<1V'  # keys with spaces go in double quotes
+```
+
+Keys and text compare case-insensitively. `=` matches the whole value, as text
+or as a number. `<`, `<=`, `>` and `>=` compare numbers, which may have a
+decimal comma, an SI prefix (p, n, u or µ, m, k or K, M, G, T) and a unit
+(ignored): `10k`, `100nF`, `3,3V`, `1MHz`. Resistor codes such as `4k7`, `2R2`
+and `R47` work too. Values that are not a single number, like `4.5-16V`, never
+match a comparison; use `:` for those.
+
+## Low stock and history
+
+```sh
+partstrack edit NE555 --min 10            # less than 10 in total counts as low stock
+partstrack ls --low                       # what to reorder (combines with -t, -l, -c)
+partstrack edit NE555 --no-min            # remove the minimum
+partstrack stock NE555 Bench -5 -m "amp board"  # -m: note for the history (also for move)
+partstrack history NE555                  # the newest 50 stock changes of NE555
+partstrack history -l "Cabinet A" -n 0    # all changes in Cabinet A and inside it
+```
+
+Every stock change is recorded with the time (UTC), the location, the change,
+the new quantity and an optional note; the first stock of a new part is noted
+as "new part", and CSV imports note the file name. Deleting
+a part deletes its history too. Stock that existed before the history was added
+appears as one `initial` entry per location.
 
 Parts are referred to by name (case-insensitive) or by id. Use `#12` to force
 an id lookup when a part's name is itself a number. For that reason, part
@@ -107,7 +148,7 @@ partstrack import order.csv --add-stock -l Incoming # e.g. a distributor order
 ```
 
 The CSV has one row per part and location. Columns are `name`, `description`,
-`manufacturer`, `mpn`, `category`, `package`, `location`, `quantity`, `tags`,
+`manufacturer`, `mpn`, `category`, `package`, `location`, `quantity`, `min_quantity`, `tags`,
 `datasheets`, `images`, `other_attachments`, `notes`, plus one `attr:<name>`
 column per attribute. Lists within a cell are separated by `;`. Exported
 locations are full paths starting with `/`, so importing them never lands in a
@@ -137,19 +178,26 @@ python3 -m venv .venv
 .venv/bin/partstrack-web                    # http://<server>:8080/, all interfaces
 .venv/bin/partstrack-web --port 9000 --db /srv/partstrack/parts.db
 .venv/bin/partstrack-web --host 127.0.0.1   # this machine only
+.venv/bin/partstrack-web --url http://parts.lan:8080/  # the address in QR codes on labels
 ```
 
 It covers the same features as the CLI: searching and filtering, adding and
 editing parts, taking, adding and moving stock, uploading pictures and
 datasheets (pictures are shown on the part's page), the location tree, and CSV
-import/export. While you type tags, existing tags are suggested. The header has a switch for light mode, dark mode, or following
+import/export. Parts can have a minimum quantity; the parts list can show
+only the parts below it, and a History page lists all stock changes. To change
+several parts at once, tick them in the parts list (or use *Change all shown*
+for everything the current search and filters show) and choose *Change
+selected…*: add or remove tags, set the category, move all their stock (or only
+what is in one location) to another location, or delete them. While you type tags, existing tags are suggested. The header has a switch for light mode, dark mode, or following
 the device's setting, and an About page shows the version. The CLI and the web interface can be used on the same database
 at the same time.
 
 **There is no login.** Anyone who can reach the port can view and change the
 inventory, so only run it on a network you trust. For the same reason, CSV
 imports through the browser only accept links as attachments, never file paths
-on the server.
+on the server. Changes are only accepted from partstrack's own pages, so other
+websites you visit can't make your browser change the inventory.
 
 To run it as a service with systemd, use a unit like this (adjust user and
 paths):
@@ -168,6 +216,57 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+## JSON API
+
+The web interface also answers in JSON under `/api`, for scripts and other
+programs. It is read-only: nothing can be changed through it.
+
+```sh
+curl http://parts.lan:8080/api                        # the endpoints and the version
+curl 'http://parts.lan:8080/api/parts?q=smd&low=1'    # filters: q, tag, location, category, low
+curl 'http://parts.lan:8080/api/parts?q=resistance%3E%3D10k'  # resistance>=10k, URL-encoded
+curl http://parts.lan:8080/api/parts/12
+curl http://parts.lan:8080/api/locations
+curl http://parts.lan:8080/api/tags
+curl http://parts.lan:8080/api/categories
+curl 'http://parts.lan:8080/api/history?part=12&limit=0'  # stock changes; limit 0 for all
+```
+
+Parts include their stock, tags, attributes, minimum quantity and whether they
+are low on stock. Attachments are links to the web interface. Errors come back
+as `{"error": "..."}` with a 4xx status. Like the web interface, the API has no
+login, so anyone who can reach the server can read the inventory.
+
+## Labels with QR codes
+
+Labels for storage locations and parts carry a QR code. Scanning it with a
+phone on your network opens the web interface: a location's label shows the
+parts stored there (and in its sublocations), a part's label shows the part.
+A location label shows the location's name, its parent path and description;
+a part label shows the name, the package (or the MPN if there is no package)
+and the description.
+
+- **Web interface:** tick locations on the Locations page or parts in the
+  parts list and choose *Print labels for selected* (or *for all*), or use the
+  *Label* button on a part's page. Choose a layout and print the page with the
+  browser at 100 % scale, without headers and footers.
+- **Desktop app:** *File → Print labels…* (Ctrl+P) or *Labels…* on the
+  Locations tab. Check the locations and parts, then preview, print or save a
+  PDF.
+
+Layouts: plain A4 paper with cut lines, A4 sticker sheets (3 × 8, 3 × 7,
+4 × 10 and 2 × 8 labels, or a custom grid copied from the sheet's packaging),
+and label printers (62 × 29 mm, 89 × 36 mm or a custom size, one label per
+page). *Start at label* skips labels that are already used on the first
+sheet. "Include sublocations" prints a location together with everything
+inside it.
+
+The QR codes contain the web interface's address as other devices reach it.
+Give it with `partstrack-web --url` (or `PARTSTRACK_URL`); otherwise the
+address you opened the page with is used, and the page warns you if that is
+`localhost`. The desktop app asks for the address once and remembers it.
+Labels need the `segno` package, which the `web` and `desktop` extras install.
+
 ## Desktop app
 
 A native window for Windows and Linux, working directly on the database:
@@ -179,9 +278,12 @@ python3 -m venv .venv
 ```
 
 The Parts tab has a searchable, filterable and sortable table, with the
-selected part's details, stock, pictures and attachments next to it.
+selected part's details, stock, recent stock changes, pictures and attachments
+next to it. "Low stock" shows only the parts below their minimum quantity.
 Double-click a part to edit it, a stock entry to change it, or an attachment
-to open it. The Locations tab shows the location tree. CSV import shows what a
+to open it. **Part → Duplicate…** (Ctrl+D) starts a new part with the selected
+part's fields, tags and attributes; the web interface has a *Duplicate* button
+on each part's page that does the same. The Locations tab shows the location tree. CSV import shows what a
 file contains before anything is saved. **File → Open database…** switches to
 another database file (or creates one), and the app remembers it. **View →
 Theme** chooses light, dark or the system's setting.
@@ -189,6 +291,31 @@ Theme** chooses light, dark or the system's setting.
 The desktop app, the CLI and the web interface can all be used on the same
 database at the same time. The desktop app doesn't notice changes made
 elsewhere until you press F5 (View → Refresh).
+
+### Read-only copies of a server's inventory
+
+**File → Download copy from server…** downloads the inventory of a
+`partstrack-web` server, with its attachments, into a folder on this computer
+(by default `server-copy` next to the default database), for example to take
+it along on a laptop. Enter the web interface's address, the same one the
+label dialog uses.
+
+A copy always opens read-only, in the CLI too: everything that would change it
+is disabled, and the window title and status bar say where and when it was
+copied. This
+way no changes can be made that would be lost, because nothing goes back to
+the server. A later download into the same folder replaces the copy. The
+folder must be empty or hold an earlier copy, so no other database is ever
+overwritten. **File → Open database…** goes back to your own database.
+
+The server offers the copy at `/api/snapshot`, as a `.tar.gz` with the same
+layout as the backups below.
+
+**File → Open backup…** opens a backup made by the backup script below (or a
+snapshot saved from `/api/snapshot`) the same way: read-only, to look up what
+the inventory was like. It is unpacked into an `opened-backup` folder next to
+the default database, which is replaced by the next backup you open. To restore
+a backup, unpack it as described below.
 
 ## Backups
 
@@ -235,7 +362,8 @@ sudo systemctl start partstrack-backup.service   # back up now
 journalctl -u partstrack-backup                  # see the output
 ```
 
-To restore, stop the web service and unpack as the `partstrack` user, so the
+To look at a backup without restoring it, open it in the desktop app with
+**File → Open backup…**. To restore, stop the web service and unpack as the `partstrack` user, so the
 files keep the right owner:
 `sudo -u partstrack tar -xzf partstrack-<timestamp>.tar.gz -C /var/lib/partstrack`.
 
@@ -248,9 +376,13 @@ files keep the right owner:
   all-or-nothing. Transactions nest, and a failed inner block is undone on its
   own.
 - `partstrack/csvio.py` contains CSV import/export on top of `Inventory`.
+- `partstrack/labels.py` computes label layouts and contents for both the web
+  interface and the desktop app.
+- `partstrack/snapshot.py` makes, downloads and unpacks the read-only copies
+  of a server's inventory.
 - `partstrack/cli.py` is the command-line front end, a thin layer over `Inventory`.
-- `partstrack/web/` holds the web front end: a Flask app in `app.py`, plus
-  Jinja templates and a stylesheet.
+- `partstrack/web/` holds the web front end: a Flask app in `app.py`, the
+  read-only JSON API in `api.py`, plus Jinja templates and a stylesheet.
 - `partstrack/desktop/app.py` is the desktop front end (PySide6).
 - Schema changes go into `MIGRATIONS` in `store.py`. They are applied
   automatically using SQLite's `user_version`.

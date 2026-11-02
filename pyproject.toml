@@ -16,8 +16,8 @@ Repository = "https://github.com/kaythe/partstrack"
 Changelog = "https://github.com/kaythe/partstrack/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-web = ["flask>=3.0", "waitress>=3.0"]
-desktop = ["PySide6-Essentials>=6.8"]
+web = ["flask>=3.0", "waitress>=3.0", "segno>=1.6"]
+desktop = ["PySide6-Essentials>=6.8", "segno>=1.6"]
 
 [project.scripts]
 partstrack = "partstrack.cli:main"

@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import re
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -51,6 +53,7 @@ DOWNLOAD_TIMEOUT = 30  # seconds without data before a download is given up
 MAX_DOWNLOAD_SIZE = 200 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 (compatible; partstrack)"
 LOCATION_SEPARATOR = "/"
+NEW_PART_NOTE = "new part"  # stock history note for the initial stock of a part being added
 
 # Prefix for queries that need the full path of each location.
 LOCATION_PATHS = """
@@ -187,6 +190,35 @@ MIGRATIONS: list[str | Callable[[sqlite3.Connection], None]] = [
     _nest_locations,
     # Where a downloaded attachment came from.
     "ALTER TABLE attachments ADD COLUMN source_url TEXT;",
+    # Low-stock thresholds and the history of stock changes, which starts with
+    # one 'initial' row per existing stock entry.
+    """
+    ALTER TABLE parts ADD COLUMN min_quantity INTEGER CHECK (min_quantity >= 0);
+
+    CREATE TABLE stock_log (
+        id            INTEGER PRIMARY KEY,
+        at            TEXT NOT NULL DEFAULT (datetime('now')),
+        part_id       INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+        location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+        location_path TEXT NOT NULL,  -- at the time of the change; kept if the location goes
+        delta         INTEGER NOT NULL,
+        quantity      INTEGER NOT NULL,  -- at that location afterwards
+        action        TEXT NOT NULL CHECK (action IN ('initial', 'set', 'adjust', 'move')),
+        note          TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX stock_log_part_idx ON stock_log(part_id, id);
+    CREATE INDEX stock_log_location_idx ON stock_log(location_id);
+
+    WITH RECURSIVE paths (id, path) AS (
+        SELECT id, name FROM locations WHERE parent_id IS NULL
+        UNION ALL
+        SELECT l.id, p.path || '/' || l.name FROM locations l JOIN paths p ON l.parent_id = p.id
+    )
+    INSERT INTO stock_log (part_id, location_id, location_path, delta, quantity, action)
+    SELECT s.part_id, s.location_id, p.path, s.quantity, s.quantity, 'initial'
+    FROM stock s JOIN paths p ON p.id = s.location_id
+    ORDER BY s.part_id, p.path;
+    """,
 ]
 
 
@@ -232,6 +264,7 @@ class Part:
     notes: str = ""
     created_at: str = ""
     updated_at: str = ""
+    min_quantity: int | None = None  # below this total, stock is low; None for no threshold
     stock: list[StockEntry] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     attributes: dict[str, str] = field(default_factory=dict)
@@ -240,6 +273,25 @@ class Part:
     @property
     def total_quantity(self) -> int:
         return sum(s.quantity for s in self.stock)
+
+    @property
+    def is_low(self) -> bool:
+        return self.min_quantity is not None and self.total_quantity < self.min_quantity
+
+
+@dataclass
+class StockChange:
+    """One entry of the stock history: a change of a part's quantity at one location."""
+
+    id: int
+    at: str  # UTC, 'YYYY-MM-DD HH:MM:SS'
+    part_id: int
+    part_name: str
+    location: str  # full path at the time of the change
+    delta: int
+    quantity: int  # at that location afterwards
+    action: str  # 'initial', 'set', 'adjust' or 'move'
+    note: str
 
 
 @dataclass
@@ -336,6 +388,63 @@ def _download(url: str, dest: Path, *, allow_local: bool) -> None:
         raise InventoryError(f"downloading {url} failed: {e}") from None
 
 
+SI_PREFIXES = {
+    "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6, "m": 1e-3,
+    "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12,
+}
+_NUMBER = re.compile(r"([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[eE][+-]?\d+)?)\s*(\S*)")
+# Resistor-style codes, where the prefix (or R for none) marks the decimal point: 4k7, 2R2, R47.
+_CODE = re.compile(r"(\d*)([pnuµμmkKMGTRr])(\d+)(\S*)")
+_UNIT = re.compile(r"[^\W\d_]*[%°]?[^\W\d_]*")  # letters (Ω, °C and % included), no digits
+
+
+def si_number(text: str) -> float | None:
+    """The value of a number with an optional SI prefix and unit, e.g. '4.7k',
+    '100 nF', '3,3V', '4k7' or '2R2'; None for anything else (e.g. '4.5-16V').
+    The unit is ignored. Results are rounded to 12 significant digits, so equal
+    values written differently ('100n', '0.1u') compare equal."""
+    text = text.strip()
+    if match := _CODE.fullmatch(text):
+        whole, prefix, fraction, unit = match.groups()
+        if (whole or prefix in "Rr") and _UNIT.fullmatch(unit) and unit[:1] not in SI_PREFIXES:
+            value = float(f"{whole or 0}.{fraction}") * SI_PREFIXES.get(prefix, 1.0)
+            return float(f"{value:.12g}")
+    match = _NUMBER.fullmatch(text)
+    if not match:
+        return None
+    number, suffix = match.groups()
+    factor = 1.0
+    if suffix[:1] in SI_PREFIXES:
+        factor, suffix = SI_PREFIXES[suffix[0]], suffix[1:]
+    if not _UNIT.fullmatch(suffix):
+        return None
+    return float(f"{float(number.replace(',', '.')) * factor:.12g}")
+
+
+# A search word that filters on an attribute: key, operator, value.
+_ATTRIBUTE_FILTER = re.compile(r"([^=<>:]+?)(>=|<=|=|<|>|:)(.*)", re.DOTALL)
+
+
+def _search_words(query: str) -> list[str]:
+    """Split a search into words; quotes group words, e.g. '"forward voltage"<1V'."""
+    try:
+        return shlex.split(query)
+    except ValueError:  # unbalanced quotes: take the words as they are
+        return query.split()
+
+
+def _schema_version(db_path: Path) -> int:
+    conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _sql_si_number(text: object) -> float | None:
+    return si_number(text) if isinstance(text, str) else None
+
+
 def _like_pattern(text: str) -> str:
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
@@ -390,16 +499,32 @@ class Inventory:
     # Downloads from this machine are refused (see _check_download_url); tests allow them.
     allow_local_downloads = False
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, read_only: bool = False):
+        """With `read_only`, every change raises InventoryError (e.g. for copies of
+        a server's inventory); the file must exist, and SQLite opens it read-only."""
         self.db_path = Path(db_path).expanduser()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
         self.attachments_dir = self.db_path.parent / "attachments"
-        self.conn = sqlite3.connect(self.db_path)
+        if read_only:
+            if not self.db_path.is_file():
+                raise NotFoundError(f"no database at {self.db_path}")
+            if _schema_version(self.db_path) < len(MIGRATIONS):
+                Inventory(self.db_path).close()  # upgrade it first; a read-only connection can't
+            self.conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function("si_number", 1, _sql_si_number, deterministic=True)
         self._transaction_depth = 0
         self._after_commit: list[Callable[[], None]] = []
         self._after_rollback: list[Callable[[], None]] = []
-        self._migrate()
+        if read_only:
+            if self.conn.execute("PRAGMA user_version").fetchone()[0] > len(MIGRATIONS):
+                self.conn.close()
+                raise InventoryError(f"{self.db_path} was created by a newer version of partstrack")
+        else:
+            self._migrate()
         self.conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self) -> None:
@@ -440,6 +565,8 @@ class Inventory:
         Transactions can be nested: a failing inner block is undone on its own
         (using a savepoint), and only the outermost block commits.
         """
+        if self.read_only:
+            raise InventoryError("this is a read-only copy; changes can't be saved")
         depth = self._transaction_depth
         self._transaction_depth += 1
         try:
@@ -519,6 +646,30 @@ class Inventory:
         except sqlite3.IntegrityError:
             raise InventoryError(f"a part named '{fields['name']}' already exists") from None
 
+    def duplicate_part(self, part_id: int, new_name: str) -> int:
+        """Add a part named `new_name` with the fields, tags, attributes and minimum
+        quantity of another; returns its id. Stock and attachments are not copied."""
+        with self.transaction():
+            source = self.get_part(part_id)
+            new_id = self.add_part(
+                new_name, **{name: getattr(source, name) for name in EDITABLE_FIELDS if name != "name"}
+            )
+            self.add_tags(new_id, source.tags)
+            self.set_attributes(new_id, source.attributes)
+            self.set_min_quantity(new_id, source.min_quantity)
+        return new_id
+
+    def set_min_quantity(self, part_id: int, min_quantity: int | None) -> None:
+        """Set the total below which a part counts as low on stock; None removes the threshold."""
+        if min_quantity is not None and min_quantity < 0:
+            raise InventoryError("minimum quantity must not be negative")
+        with self.transaction():
+            self._require_part(part_id)
+            self.conn.execute(
+                "UPDATE parts SET min_quantity = ?, updated_at = datetime('now') WHERE id = ?",
+                (min_quantity, part_id),
+            )
+
     def delete_part(self, part_id: int) -> None:
         with self.transaction():
             self._require_part(part_id)
@@ -550,42 +701,76 @@ class Inventory:
         raise NotFoundError(f"no part '{ref}'")
 
     def get_part(self, part_id: int) -> Part:
-        row = self.conn.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
-        if row is None:
+        parts = self._load_parts("SELECT ?", [part_id])
+        if not parts:
             raise NotFoundError(f"no part with id {part_id}")
-        part = Part(**dict(row))
-        part.stock = sorted(
-            (
-                StockEntry(r["path"], r["quantity"])
-                for r in self.conn.execute(
-                    LOCATION_PATHS + "SELECT lp.path, s.quantity FROM stock s"
-                    " JOIN location_paths lp ON lp.id = s.location_id WHERE s.part_id = ?",
-                    (part_id,),
-                )
-            ),
-            key=lambda s: _path_key(s.location),
-        )
-        part.tags = [
-            r["name"]
-            for r in self.conn.execute(
-                "SELECT t.name FROM part_tags pt JOIN tags t ON t.id = pt.tag_id"
-                " WHERE pt.part_id = ? ORDER BY t.name",
-                (part_id,),
-            )
-        ]
-        part.attributes = {
-            r["key"]: r["value"]
-            for r in self.conn.execute(
-                "SELECT key, value FROM attributes WHERE part_id = ? ORDER BY key", (part_id,)
-            )
+        return parts[0]
+
+    def get_parts(self, part_ids: Iterable[int]) -> list[Part]:
+        """Several parts by id, sorted by name; raises NotFoundError if one is missing."""
+        wanted = list(dict.fromkeys(part_ids))
+        if not wanted:
+            return []
+        parts = self._load_parts(f"SELECT id FROM parts WHERE id IN ({', '.join('?' * len(wanted))})", wanted)
+        if len(parts) < len(wanted):
+            missing = sorted(set(wanted) - {p.id for p in parts})
+            raise NotFoundError(f"no part with id {missing[0]}")
+        return parts
+
+    def _load_parts(self, ids_sql: str, params: list) -> list[Part]:
+        """Load the parts whose ids `ids_sql` (a SELECT of one column) returns, sorted
+        by name, with their stock, tags, attributes and attachments. It runs one query
+        per table however many parts there are, so long lists stay fast. The queries
+        share one read transaction: each evaluates `ids_sql` again, and a write by
+        someone else in between would otherwise return parts the first one didn't load."""
+        with self._consistent_reads():
+            return self._load_parts_now(ids_sql, params)
+
+    @contextmanager
+    def _consistent_reads(self) -> Iterator[None]:
+        """Make the queries inside see one state of the database. Writers elsewhere
+        wait until it ends (SQLite's busy timeout covers that). Works on read-only
+        databases too, unlike transaction()."""
+        if self.conn.in_transaction:  # e.g. inside transaction(): already consistent
+            yield
+            return
+        self.conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self.conn.rollback()  # only read; this just ends the transaction
+
+    def _load_parts_now(self, ids_sql: str, params: list) -> list[Part]:
+        where = f" IN ({ids_sql})"
+        parts = {
+            r["id"]: Part(**dict(r))
+            for r in self.conn.execute(f"SELECT * FROM parts WHERE id{where} ORDER BY name", params)
         }
-        part.attachments = [
-            self._attachment_from_row(r)
-            for r in self.conn.execute(
-                "SELECT * FROM attachments WHERE part_id = ? ORDER BY kind, id", (part_id,)
-            )
-        ]
-        return part
+        if not parts:
+            return []
+        for r in self.conn.execute(
+            LOCATION_PATHS + "SELECT s.part_id, lp.path, s.quantity FROM stock s"
+            f" JOIN location_paths lp ON lp.id = s.location_id WHERE s.part_id{where}",
+            params,
+        ):
+            parts[r["part_id"]].stock.append(StockEntry(r["path"], r["quantity"]))
+        for r in self.conn.execute(
+            "SELECT pt.part_id, t.name FROM part_tags pt JOIN tags t ON t.id = pt.tag_id"
+            f" WHERE pt.part_id{where} ORDER BY t.name",
+            params,
+        ):
+            parts[r["part_id"]].tags.append(r["name"])
+        for r in self.conn.execute(
+            f"SELECT part_id, key, value FROM attributes WHERE part_id{where} ORDER BY key", params
+        ):
+            parts[r["part_id"]].attributes[r["key"]] = r["value"]
+        for r in self.conn.execute(
+            f"SELECT * FROM attachments WHERE part_id{where} ORDER BY kind, id", params
+        ):
+            parts[r["part_id"]].attachments.append(self._attachment_from_row(r))
+        for part in parts.values():
+            part.stock.sort(key=lambda s: _path_key(s.location))
+        return list(parts.values())
 
     def list_parts(
         self,
@@ -594,15 +779,26 @@ class Inventory:
         tag: str | None = None,
         location: str | None = None,
         category: str | None = None,
+        low: bool = False,
     ) -> list[Part]:
         """Return matching parts, sorted by name.
 
         Every word of `query` must appear (case-insensitively) in the part's
-        text fields, tags or attribute values. `location` also matches parts
-        stored in its sublocations.
+        text fields, tags or attribute values. Words like 'key=value' filter
+        on an attribute instead (see _attribute_filter): '=' (equal, also as
+        numbers), ':' (contains; 'key:' alone means the attribute exists), and
+        '<', '<=', '>', '>=' (compare numbers with SI prefixes, see si_number).
+        Quotes group words, e.g. '"forward voltage"<1V'. `location` also matches parts
+        stored in its sublocations. `low` keeps only parts whose total stock
+        is below their minimum quantity.
         """
         where, params = [], []
-        for word in query.split():
+        for word in _search_words(query):
+            if match := _ATTRIBUTE_FILTER.fullmatch(word):
+                condition, values = self._attribute_filter(*match.groups())
+                where.append(condition)
+                params += values
+                continue
             pattern = _like_pattern(word)
             where.append(
                 "("
@@ -629,11 +825,33 @@ class Inventory:
         if category:
             where.append("p.category = ? COLLATE NOCASE")
             params.append(category)
+        if low:
+            where.append(
+                "p.min_quantity IS NOT NULL AND"
+                " COALESCE((SELECT SUM(s.quantity) FROM stock s WHERE s.part_id = p.id), 0) < p.min_quantity"
+            )
         sql = "SELECT p.id FROM parts p"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY p.name"
-        return [self.get_part(r["id"]) for r in self.conn.execute(sql, params).fetchall()]
+        return self._load_parts(sql, params)
+
+    @staticmethod
+    def _attribute_filter(key: str, operator: str, value: str) -> tuple[str, list]:
+        """SQL condition and parameters for one attribute filter of list_parts."""
+        key, value = key.strip(), value.strip()
+        condition = "EXISTS (SELECT 1 FROM attributes a WHERE a.part_id = p.id AND a.key = ? AND "
+        if operator == ":":
+            return condition + "a.value LIKE ? ESCAPE '\\')", [key, _like_pattern(value)]
+        if not value:
+            raise InventoryError(f"'{key}{operator}' needs a value to compare with")
+        number = si_number(value)
+        if operator == "=":
+            if number is None:
+                return condition + "a.value = ? COLLATE NOCASE)", [key, value]
+            return condition + "(a.value = ? COLLATE NOCASE OR si_number(a.value) = ?))", [key, value, number]
+        if number is None:
+            raise InventoryError(f"'{key}{operator}{value}': '{value}' is not a number")
+        return condition + f"si_number(a.value) {operator} ?)", [key, number]
 
     # -- tags and attributes -------------------------------------------------
 
@@ -805,7 +1023,10 @@ class Inventory:
 
     # -- stock ---------------------------------------------------------------
 
-    def set_stock(self, part_id: int, location: str, quantity: int) -> None:
+    # Every change is recorded in the stock history (see stock_history), with
+    # an optional note such as "for the amplifier board".
+
+    def set_stock(self, part_id: int, location: str, quantity: int, *, note: str = "") -> None:
         if quantity < 0:
             raise InventoryError("quantity must not be negative")
         self._require_part(part_id)
@@ -816,9 +1037,9 @@ class Inventory:
                     return  # nothing stored at a location that doesn't exist
             else:
                 location_id = self._location_id(location, create=True)
-            self._write_stock(part_id, location_id, quantity)
+            self._write_stock(part_id, location_id, quantity, action="set", note=note)
 
-    def adjust_stock(self, part_id: int, location: str, delta: int) -> int:
+    def adjust_stock(self, part_id: int, location: str, delta: int, *, note: str = "") -> int:
         """Add (positive delta) or take (negative delta) parts; returns the new quantity."""
         self._require_part(part_id)
         with self.transaction():
@@ -827,10 +1048,12 @@ class Inventory:
             new = current + delta
             if new < 0:
                 raise InventoryError(f"only {current} in '{location}', cannot take {-delta}")
-            self._write_stock(part_id, location_id, new)
+            self._write_stock(part_id, location_id, new, action="adjust", note=note)
         return new
 
-    def move_stock(self, part_id: int, source: str, destination: str, quantity: int | None = None) -> int:
+    def move_stock(
+        self, part_id: int, source: str, destination: str, quantity: int | None = None, *, note: str = ""
+    ) -> int:
         """Move `quantity` (default: all) parts between locations; returns the amount moved."""
         self._require_part(part_id)
         with self.transaction():
@@ -845,9 +1068,74 @@ class Inventory:
             destination_id = self._location_id(destination, create=True)
             if destination_id == source_id:
                 raise InventoryError("source and destination are the same location")
-            self._write_stock(part_id, source_id, available - quantity)
-            self._write_stock(part_id, destination_id, self._read_stock(part_id, destination_id) + quantity)
+            self._write_stock(part_id, source_id, available - quantity, action="move", note=note)
+            self._write_stock(
+                part_id, destination_id, self._read_stock(part_id, destination_id) + quantity,
+                action="move", note=note,
+            )
         return quantity
+
+    def move_all_stock(self, part_id: int, destination: str, *, source: str | None = None, note: str = "") -> int:
+        """Move all of a part's stock to `destination`, or only the stock at `source`
+        and its sublocations; returns how many were moved (0 if there was nothing)."""
+        self._require_part(part_id)
+        with self.transaction():
+            entries = self.conn.execute(
+                "SELECT location_id, quantity FROM stock WHERE part_id = ?", (part_id,)
+            ).fetchall()
+            if source is not None:
+                inside = set(self._subtree_ids(self._location_id(source, create=False)))
+                entries = [e for e in entries if e["location_id"] in inside]
+            if not entries:
+                return 0  # and don't create the destination for nothing
+            destination_id = self._location_id(destination, create=True)
+            moved = 0
+            for entry in entries:
+                if entry["location_id"] == destination_id:
+                    continue
+                self._write_stock(part_id, entry["location_id"], 0, action="move", note=note)
+                self._write_stock(
+                    part_id, destination_id, self._read_stock(part_id, destination_id) + entry["quantity"],
+                    action="move", note=note,
+                )
+                moved += entry["quantity"]
+        return moved
+
+    def stock_history(
+        self, part_id: int | None = None, *, location: str | None = None, limit: int | None = 50
+    ) -> list[StockChange]:
+        """Return stock changes, newest first, optionally only those of one part
+        or at one location (including its sublocations). `limit=None` returns all."""
+        where, params = [], []
+        if part_id is not None:
+            self._require_part(part_id)
+            where.append("l.part_id = ?")
+            params.append(part_id)
+        if location:
+            location_ids = self._subtree_ids(self._location_id(location, create=False))
+            where.append(f"l.location_id IN ({', '.join('?' * len(location_ids))})")
+            params += location_ids
+        sql = "SELECT l.*, p.name AS part_name FROM stock_log l JOIN parts p ON p.id = l.part_id"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY l.id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [
+            StockChange(
+                id=r["id"],
+                at=r["at"],
+                part_id=r["part_id"],
+                part_name=r["part_name"],
+                location=r["location_path"],
+                delta=r["delta"],
+                quantity=r["quantity"],
+                action=r["action"],
+                note=r["note"],
+            )
+            for r in self.conn.execute(sql, params)
+        ]
 
     # -- attachments ---------------------------------------------------------
 
@@ -1048,7 +1336,16 @@ class Inventory:
         ).fetchone()
         return row["quantity"] if row else 0
 
-    def _write_stock(self, part_id: int, location_id: int, quantity: int) -> None:
+    def _write_stock(self, part_id: int, location_id: int, quantity: int, *, action: str, note: str) -> None:
+        """Store a new quantity and record the change in the stock history.
+        Call it inside a transaction, so the change and its record are saved together."""
+        delta = quantity - self._read_stock(part_id, location_id)
+        if delta:
+            self.conn.execute(
+                "INSERT INTO stock_log (part_id, location_id, location_path, delta, quantity, action, note)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (part_id, location_id, self.location_path(location_id), delta, quantity, action, note.strip()),
+            )
         if quantity == 0:
             self.conn.execute(
                 "DELETE FROM stock WHERE part_id = ? AND location_id = ?", (part_id, location_id)

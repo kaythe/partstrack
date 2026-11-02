@@ -19,6 +19,10 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
 {% block title %}{{ "Edit " ~ part.name if part else "Add part" }}{% endblock %}
 {% block content %}
 <h1>{{ "Edit " ~ part.name if part else "Add part" }}</h1>
+{% if copy_of %}
+<p class="muted">A copy of <a href="{{ url_for('ui.part', part_id=copy_of.id) }}">{{ copy_of.name }}</a>
+  with its fields, tags and attributes, but without stock and attachments. Give it a new name.</p>
+{% endif %}
 <form class="stack" method="post" enctype="multipart/form-data">
   <div class="grid">
     <label>Name <input name="name" value="{{ values.name }}" required autofocus></label>
@@ -26,6 +30,8 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
     <label>Manufacturer <input name="manufacturer" value="{{ values.manufacturer }}"></label>
     <label>Manufacturer part number <input name="mpn" value="{{ values.mpn }}"></label>
     <label>Package <input name="package" value="{{ values.package }}" placeholder="e.g. 0805, SOIC-8, TO-220"></label>
+    <label>Minimum quantity <input type="number" name="min_quantity" min="0" value="{{ values.min_quantity }}"
+                                   placeholder="none" title="Less than this in total counts as low stock"></label>
   </div>
   <label>Description <input name="description" value="{{ values.description }}"></label>
   <label>Tags <input name="tags" value="{{ values.tags }}" placeholder="Comma separated, e.g. smd, timer"
@@ -55,7 +61,8 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
 
   <div class="actions">
     <button class="primary">Save</button>
-    <a href="{{ url_for('ui.part', part_id=part.id) if part else url_for('ui.parts') }}">Cancel</a>
+    {% set back = part or copy_of %}
+    <a href="{{ url_for('ui.part', part_id=back.id) if back else url_for('ui.parts') }}">Cancel</a>
   </div>
 </form>
 {% include "_datalists.html" %}

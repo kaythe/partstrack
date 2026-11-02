@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Minimum quantity per part: a part with less than that in total counts as
+  low on stock. Set it with `add`/`edit --min` (`edit --no-min` removes it) or
+  in the part forms, and list low parts with `partstrack ls --low` or the
+  "Low stock" filter in the web interface and desktop app. CSV files have a
+  new `min_quantity` column.
+- Stock history: every stock change is recorded with time, location, change,
+  new quantity and an optional note (`stock -m`, `move -m`, or the note fields
+  in the web interface and desktop app). Show it with `partstrack history`,
+  on a part's page, on the web interface's new History page, and in the
+  desktop app's part view. Existing stock is recorded as `initial` entries
+  when the database is upgraded.
+- Labels with QR codes for locations and parts, printed in batches from the
+  web interface (checkboxes on the Locations and Parts pages) or the desktop
+  app (File → Print labels…, also as PDF). Scanning a label opens the
+  location's parts or the part in the web interface. Layouts for plain paper
+  with cut lines, A4 sticker sheets and label printers, plus custom sizes and
+  a start position for partly used sheets. `partstrack-web --url` sets the
+  address in the codes. The `web` and `desktop` extras now include `segno`.
+- Duplicating a part: `partstrack copy NE555 NE556`, the *Duplicate* button
+  on a part's web page, or Part → Duplicate… (Ctrl+D) in the desktop app. The
+  copy gets the fields, tags, attributes and minimum quantity, but no stock
+  or attachments; the web and desktop forms let you change it before saving.
+- Searching by attribute: search words like `resistance>=10k`,
+  `capacitance=100n`, `vcc:16` or `vcc:` filter on attributes, comparing
+  numbers with SI prefixes and units (`4k7`, `100nF`, `3,3V`). This works in
+  the CLI, the web interface and the desktop app.
+- Bulk changes in the web interface: tick parts in the parts list (or take
+  all that the current filters show) to add or remove tags, set the category,
+  move all their stock (optionally only from one location) or delete them in
+  one go.
+- A read-only JSON API in the web interface under `/api`: parts (with the
+  same search and filters as the parts page), single parts, locations, tags,
+  categories and the stock history.
+- Read-only copies of a server's inventory in the desktop app: File →
+  Download copy from server… downloads the database and attachments (served
+  at `/api/snapshot`) into a folder, and opens them read-only, so no changes
+  get made that would be lost. A later download replaces the copy.
+- File → Open backup… in the desktop app opens a backup from the backup
+  script (or a saved snapshot) read-only, to look up an earlier state of the
+  inventory without restoring it.
+
+### Changed
+
+- Listing and searching parts is much faster for large inventories (about
+  ten times for 2000 parts), in all front ends and the CSV export.
+
+### Security
+
+- The web interface refuses changes sent from other websites. Before, a
+  website you visited could make your browser post forms to partstrack, for
+  example to delete parts (cross-site request forgery).
+
 ## [1.0.0] - 2026-10-30
 
 First stable release.

@@ -16,10 +16,12 @@
 
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
-from partstrack.store import MIGRATIONS, Inventory, InventoryError, NotFoundError
+from partstrack.store import MIGRATIONS, Inventory, InventoryError, NotFoundError, si_number
 
 
 class InventoryTest(unittest.TestCase):
@@ -225,6 +227,203 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(self.inv.location_path("strasse"), "STRASSE")
         self.assertEqual(self.inv.location_path("straße"), "Straße")
 
+    def test_list_parts_uses_a_fixed_number_of_queries(self):
+        def queries_for_listing():
+            statements = []
+            self.inv.conn.set_trace_callback(statements.append)
+            try:
+                parts = self.inv.list_parts()
+            finally:
+                self.inv.conn.set_trace_callback(None)
+            return len(parts), len(statements)
+
+        for i in range(2):
+            part_id = self.inv.add_part(f"Part {i}")
+            self.inv.add_tags(part_id, ["smd"])
+            self.inv.set_attribute(part_id, "value", str(i))
+            self.inv.set_stock(part_id, f"Cabinet/Drawer {i}", 1)
+        few = queries_for_listing()
+        for i in range(2, 20):
+            part_id = self.inv.add_part(f"Part {i}")
+            self.inv.add_tags(part_id, ["smd"])
+            self.inv.set_stock(part_id, f"Cabinet/Drawer {i}", 1)
+        many = queries_for_listing()
+        self.assertEqual((few[0], many[0]), (2, 20))
+        self.assertEqual(few[1], many[1])
+        part = self.inv.list_parts("Part 1")[0]
+        self.assertEqual((part.tags, part.attributes, [s.location for s in part.stock]),
+                         (["smd"], {"value": "1"}, ["Cabinet/Drawer 1"]))
+
+    def test_duplicate_part(self):
+        (self.dir / "ds.pdf").write_bytes(b"%PDF")
+        source = self.inv.add_part("NE555", manufacturer="TI", package="DIP-8", notes="timer")
+        self.inv.add_tags(source, ["timer", "tht"])
+        self.inv.set_attribute(source, "Vcc", "4.5-16V")
+        self.inv.set_min_quantity(source, 5)
+        self.inv.set_stock(source, "Box", 10)
+        self.inv.add_attachment(source, str(self.dir / "ds.pdf"))
+        copy = self.inv.get_part(self.inv.duplicate_part(source, " NE556 "))
+        self.assertEqual(
+            (copy.name, copy.manufacturer, copy.package, copy.notes, copy.tags, copy.attributes, copy.min_quantity),
+            ("NE556", "TI", "DIP-8", "timer", ["tht", "timer"], {"Vcc": "4.5-16V"}, 5),
+        )
+        self.assertEqual((copy.stock, copy.attachments), ([], []))
+        with self.assertRaises(InventoryError):
+            self.inv.duplicate_part(source, "ne555")
+        self.assertEqual(len(self.inv.list_parts()), 2)  # the failed copy left nothing behind
+
+    def test_si_number(self):
+        for text, value in [("10k", 1e4), ("10 kΩ", 1e4), ("10K", 1e4), ("4k7", 4700), ("2R2", 2.2), ("R47", 0.47),
+                            ("100nF", 1e-7), ("0.1u", 1e-7), ("3,3V", 3.3), ("3300mV", 3.3), ("1M", 1e6),
+                            ("1m", 1e-3), ("-40°C", -40), ("10%", 10), ("1e3", 1000), ("2.2µF", 2.2e-6)]:
+            with self.subTest(text=text):
+                self.assertEqual(si_number(text), value)
+        for text in ["4.5-16V", "1/4W", "12V DC", "DIP-8", "abc", "k", "", "4k7k"]:
+            with self.subTest(text=text):
+                self.assertIsNone(si_number(text))
+
+    def test_attribute_search(self):
+        for name, attributes in [("R1", {"Resistance": "4k7", "Power": "1/4W"}), ("R2", {"resistance": "10 kΩ"}),
+                                 ("R3", {"resistance": "1M"}), ("C1", {"capacitance": "100nF"}),
+                                 ("U1", {"Vcc": "4.5-16V", "forward voltage": "0.7V"}), ("U2", {"vcc": "3,3V"})]:
+            part_id = self.inv.add_part(name)
+            self.inv.set_attributes(part_id, attributes)
+            self.inv.add_tags(part_id, ["smd"] if name != "R3" else ["tht"])
+        names = lambda query, **kwargs: [p.name for p in self.inv.list_parts(query, **kwargs)]
+        self.assertEqual(names("resistance>=10k"), ["R2", "R3"])
+        self.assertEqual(names("resistance<10k"), ["R1"])
+        self.assertEqual(names("resistance<=10000 resistance>4.7k"), ["R2"])
+        self.assertEqual(names("RESISTANCE=10000"), ["R2"])
+        self.assertEqual(names("resistance=4.7k"), ["R1"])
+        self.assertEqual(names("capacitance=0.1u"), ["C1"])
+        self.assertEqual(names("vcc<5"), ["U2"])  # "4.5-16V" isn't a number
+        self.assertEqual(names("vcc=4.5-16v"), ["U1"])
+        self.assertEqual(names("vcc:16"), ["U1"])
+        self.assertEqual(names("vcc:"), ["U1", "U2"])
+        self.assertEqual(names("power:1/4"), ["R1"])
+        self.assertEqual(names('"forward voltage"<1V'), ["U1"])
+        self.assertEqual(names("resistance>1k", tag="smd"), ["R1", "R2"])
+        self.assertEqual(names("resistance>1k 1M"), ["R3"])  # combined with a plain word
+        self.assertEqual(names('unbalanced "quote'), [])
+        for query in ["vcc<five", "vcc>=", "vcc="]:
+            with self.subTest(query=query), self.assertRaises(InventoryError):
+                self.inv.list_parts(query)
+
+    def test_list_parts_while_someone_else_writes(self):
+        for i in range(3):
+            self.inv.add_tags(self.inv.add_part(f"P{i}"), ["smd"])
+        writer = threading.Thread(target=self._add_part_elsewhere, args=("NEW",))
+
+        def start_writer_between_queries(sql):
+            if "FROM stock" in sql and not writer.is_alive() and writer.ident is None:
+                writer.start()
+                time.sleep(0.2)  # give it time to try to commit during the listing
+
+        self.inv.conn.set_trace_callback(start_writer_between_queries)
+        try:
+            parts = self.inv.list_parts()
+        finally:
+            self.inv.conn.set_trace_callback(None)
+        writer.join()
+        self.assertEqual([p.name for p in parts], ["P0", "P1", "P2"])  # one consistent state
+        self.assertEqual([p.tags for p in parts], [["smd"]] * 3)
+        self.assertIn("NEW", [p.name for p in self.inv.list_parts()])  # the writer only waited
+
+    def _add_part_elsewhere(self, name):
+        conn = sqlite3.connect(self.dir / "parts.db", timeout=10)
+        with conn:
+            conn.execute("INSERT INTO parts (name) VALUES (?)", (name,))
+            conn.execute("INSERT INTO part_tags SELECT (SELECT id FROM parts WHERE name = ?), id FROM tags", (name,))
+        conn.close()
+
+    def test_get_parts(self):
+        b, a = self.inv.add_part("B"), self.inv.add_part("A")
+        self.assertEqual([p.name for p in self.inv.get_parts([b, a, b])], ["A", "B"])
+        self.assertEqual(self.inv.get_parts([]), [])
+        with self.assertRaises(NotFoundError):
+            self.inv.get_parts([a, 999])
+
+    def test_move_all_stock(self):
+        part_id = self.inv.add_part("NE555")
+        self.inv.set_stock(part_id, "Cabinet/Drawer 1", 5)
+        self.inv.set_stock(part_id, "Cabinet/Drawer 2", 3)
+        self.inv.set_stock(part_id, "Bench", 2)
+        self.assertEqual(self.inv.move_all_stock(part_id, "Box", source="Cabinet", note="tidy"), 8)
+        stock = lambda: {s.location: s.quantity for s in self.inv.get_part(part_id).stock}
+        self.assertEqual(stock(), {"Bench": 2, "Box": 8})
+        self.assertEqual(self.inv.move_all_stock(part_id, "Bench"), 8)  # what's already there stays
+        self.assertEqual(stock(), {"Bench": 10})
+        self.assertEqual({c.note for c in self.inv.stock_history(part_id)[:4]}, {"", "tidy"})
+        empty = self.inv.add_part("LM358")
+        self.assertEqual(self.inv.move_all_stock(empty, "Nowhere"), 0)
+        self.assertNotIn("Nowhere", [l.path for l in self.inv.list_locations()])
+        with self.assertRaises(NotFoundError):
+            self.inv.move_all_stock(part_id, "Box", source="Missing")
+
+    def test_low_stock(self):
+        low = self.inv.add_part("NE555")
+        empty = self.inv.add_part("LM358")
+        enough = self.inv.add_part("BC547")
+        self.inv.add_part("1N4148")  # no minimum: never low
+        self.inv.set_stock(low, "Box", 3)
+        self.inv.set_stock(low, "Bench", 1)
+        self.inv.set_stock(enough, "Box", 10)
+        self.inv.set_min_quantity(low, 5)
+        self.inv.set_min_quantity(empty, 1)
+        self.inv.set_min_quantity(enough, 10)  # exactly the minimum is not low
+        self.assertEqual([p.name for p in self.inv.list_parts(low=True)], ["LM358", "NE555"])
+        self.assertEqual([p.name for p in self.inv.list_parts(location="Box", low=True)], ["NE555"])
+        self.assertTrue(self.inv.get_part(low).is_low)
+        self.assertFalse(self.inv.get_part(enough).is_low)
+        self.inv.set_min_quantity(low, None)
+        self.assertIsNone(self.inv.get_part(low).min_quantity)
+        with self.assertRaises(InventoryError):
+            self.inv.set_min_quantity(empty, -1)
+
+    def test_stock_history(self):
+        part_id = self.inv.add_part("10k resistor")
+        other = self.inv.add_part("NE555")
+        self.inv.set_stock(part_id, "Cabinet/Drawer 1", 100, note="initial count")
+        self.inv.adjust_stock(part_id, "Drawer 1", -30, note="  amp board  ")
+        self.inv.set_stock(part_id, "Drawer 1", 70)  # unchanged: not recorded
+        self.inv.move_stock(part_id, "Drawer 1", "Bench", 20)
+        self.inv.set_stock(other, "Bench", 5)
+        changes = self.inv.stock_history(part_id)
+        self.assertEqual(
+            [(c.location, c.delta, c.quantity, c.action, c.note) for c in reversed(changes)],
+            [
+                ("Cabinet/Drawer 1", 100, 100, "set", "initial count"),
+                ("Cabinet/Drawer 1", -30, 70, "adjust", "amp board"),
+                ("Cabinet/Drawer 1", -20, 50, "move", ""),
+                ("Bench", 20, 20, "move", ""),
+            ],
+        )
+        self.assertEqual(changes[0].part_name, "10k resistor")
+        self.assertEqual(len(self.inv.stock_history()), 5)
+        self.assertEqual(len(self.inv.stock_history(limit=2)), 2)
+        self.assertEqual([c.delta for c in self.inv.stock_history(location="Cabinet")], [-20, -30, 100])
+
+    def test_failed_stock_change_leaves_no_history(self):
+        part_id = self.inv.add_part("BC547")
+        self.inv.set_stock(part_id, "Box", 5)
+        with self.assertRaises(InventoryError):
+            with self.inv.transaction():
+                self.inv.adjust_stock(part_id, "Box", -2)
+                self.inv.adjust_stock(part_id, "Box", -10)
+        self.assertEqual([c.delta for c in self.inv.stock_history(part_id)], [5])
+
+    def test_history_outlives_its_location_but_not_its_part(self):
+        part_id = self.inv.add_part("BC547")
+        self.inv.set_stock(part_id, "Shelf/Box", 5)
+        self.inv.move_stock(part_id, "Box", "Bench")
+        self.inv.delete_location("/Shelf/Box")
+        self.inv.update_location("Bench", new_name="Desk")
+        self.assertEqual(
+            [c.location for c in self.inv.stock_history(part_id)], ["Bench", "Shelf/Box", "Shelf/Box"]
+        )
+        self.inv.delete_part(part_id)
+        self.assertEqual(self.inv.stock_history(), [])
+
 
 class MigrationTest(unittest.TestCase):
     def test_v1_flat_locations_become_nested(self):
@@ -249,6 +448,29 @@ class MigrationTest(unittest.TestCase):
                 )
                 with self.assertRaises(InventoryError):  # names are unique per parent now
                     inv.add_location("Cabinet 1/drawer 4")
+
+    def test_v3_gets_minimum_and_initial_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "parts.db"
+            conn = sqlite3.connect(db)
+            for migration in MIGRATIONS[:3]:
+                migration(conn) if callable(migration) else conn.executescript(migration)
+            conn.executescript("""
+                PRAGMA user_version = 3;
+                INSERT INTO parts (id, name) VALUES (1, 'NE555'), (2, 'LM358');
+                INSERT INTO locations (id, parent_id, name) VALUES (1, NULL, 'Cabinet'), (2, 1, 'Drawer 4'),
+                                                                   (3, NULL, 'Bench');
+                INSERT INTO stock VALUES (1, 2, 5), (1, 3, 1), (2, 3, 7);
+            """)
+            conn.close()
+            with Inventory(db) as inv:
+                self.assertIsNone(inv.get_part(1).min_quantity)
+                self.assertEqual(
+                    [(c.part_name, c.location, c.delta, c.quantity, c.action)
+                     for c in reversed(inv.stock_history())],
+                    [("NE555", "Bench", 1, 1, "initial"), ("NE555", "Cabinet/Drawer 4", 5, 5, "initial"),
+                     ("LM358", "Bench", 7, 7, "initial")],
+                )
 
 
 if __name__ == "__main__":

@@ -111,6 +111,202 @@ class WebTest(unittest.TestCase):
         page = self.client.get(f"/parts/{part_id}").get_data(as_text=True)
         self.assertIn("only 7 in", page)  # the failed take was reported
 
+    def test_minimum_quantity_and_low_filter(self):
+        self.add_part(min_quantity="30")
+        self.add_part(name="LM358", min_quantity="")
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+            self.assertIsNone(inv.get_part(inv.find_part("LM358")).min_quantity)
+        page = self.client.get("/?low=1").get_data(as_text=True)
+        self.assertIn(">NE555</a>", page)
+        self.assertNotIn(">LM358</a>", page)
+        self.assertIn("below the minimum of 30", self.client.get(f"/parts/{part_id}").get_data(as_text=True))
+        edit = self.client.get(f"/parts/{part_id}/edit").get_data(as_text=True)
+        self.assertIn('name="min_quantity" min="0" value="30"', edit)
+        self.client.post(f"/parts/{part_id}/edit", data={"name": "NE555", "min_quantity": ""})
+        self.assertNotIn(">NE555</a>", self.client.get("/?low=1").get_data(as_text=True))
+        response = self.client.post(f"/parts/{part_id}/edit", data={"name": "NE555", "min_quantity": "-2"})
+        self.assertIn("must not be negative", response.get_data(as_text=True))
+
+    def test_stock_history(self):
+        self.add_part()
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+        self.client.post(f"/parts/{part_id}/stock",
+                         data={"location": "/Cabinet A/Drawer 1", "amount": "3", "op": "take", "note": "<b>amp</b>"})
+        self.client.post(f"/parts/{part_id}/move",
+                         data={"source": "/Cabinet A/Drawer 1", "destination": "Bench", "note": "testing"})
+        with self.inventory() as inv:
+            self.assertEqual([c.note for c in inv.stock_history(part_id)], ["testing", "testing", "<b>amp</b>", "new part"])
+        page = self.client.get(f"/parts/{part_id}").get_data(as_text=True)
+        self.assertIn("&lt;b&gt;amp&lt;/b&gt;", page)
+        self.assertNotIn("Full history", page)
+        page = self.client.get("/history?location=/Bench").get_data(as_text=True)
+        self.assertIn("testing", page)
+        self.assertNotIn("amp", page)
+        self.assertIn("NE555", self.client.get(f"/history?part={part_id}").get_data(as_text=True))
+        self.assertEqual(self.client.get("/history?part=999").status_code, 404)
+        self.assertIn("no location", self.client.get("/history?location=/Nowhere").get_data(as_text=True))
+
+    def test_labels(self):
+        self.add_part(package="DIP-8", description="<b>timer</b>")
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+            inv.add_location("Cabinet A/Drawer 2")
+            inv.add_location("Shelf")
+        self.assertIn('form="labels"', self.client.get("/locations").get_data(as_text=True))
+        self.assertIn('name="part" value="%d" form="selection"' % part_id, self.client.get("/").get_data(as_text=True))
+
+        response = self.client.get(f"/labels?location=/Cabinet A&sublocations=1&part={part_id}"
+                                   "&layout=sheet-3x8-70x37&start=3")
+        page = response.get_data(as_text=True)
+        self.assertEqual(page.count('<svg class="qr"'), 4)
+        self.assertIn("left: 0.0mm; top: 37.5mm", page)  # the third place is the first of row 2
+        self.assertIn("&lt;b&gt;timer&lt;/b&gt;", page)
+        self.assertIn("DIP-8", page)
+        self.assertIn("@page { size: 210.0mm 297.0mm; margin: 0; }", page)
+        self.assertIn("only works on this computer", page)  # the test client is localhost
+        self.assertIn("sheet-3x8-70x37", response.headers["Set-Cookie"])
+
+        page = self.client.get("/labels?all_locations=1").get_data(as_text=True)  # layout from the cookie
+        self.assertEqual(page.count('<svg class="qr"'), 4)
+        self.assertIn('value="sheet-3x8-70x37" selected', page)
+        page = self.client.get("/labels?shown=1&filter_q=555").get_data(as_text=True)
+        self.assertEqual(page.count('<svg class="qr"'), 1)
+        page = self.client.get("/labels?location=/Shelf&layout=printer-62x29").get_data(as_text=True)
+        self.assertIn("@page { size: 62.0mm 29.0mm; margin: 0; }", page)
+
+        page = self.client.get("/labels?location=/Shelf&layout=custom-sheet&columns=9").get_data(as_text=True)
+        self.assertIn("more than the page", page)
+        page = self.client.get("/labels?location=/Shelf&start=99").get_data(as_text=True)
+        self.assertIn("must be between 1 and", page)
+        self.assertIn("No labels selected", self.client.get("/labels").get_data(as_text=True))
+        self.assertEqual(self.client.get("/labels?part=999").status_code, 404)
+
+    def test_labels_use_the_public_url(self):
+        client = create_app(self.db, "http://parts.lan:8080").test_client()
+        with self.inventory() as inv:
+            inv.add_location("Shelf")
+        page = client.get("/labels?location=/Shelf").get_data(as_text=True)
+        self.assertIn("The QR codes link to http://parts.lan:8080/.", page)
+        self.assertNotIn("only works on this computer", page)
+
+    def test_duplicate_part(self):
+        self.add_part(package="DIP-8", min_quantity="5")
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+        self.assertIn(f"/parts/new?copy={part_id}", self.client.get(f"/parts/{part_id}").get_data(as_text=True))
+        form = self.client.get(f"/parts/new?copy={part_id}").get_data(as_text=True)
+        self.assertIn("A copy of", form)
+        for expected in ['value="NE555"', 'value="DIP-8"', 'value="tht, timer"', "vcc = 4.5-16V", 'value="5"']:
+            self.assertIn(expected, form)
+        self.assertNotIn('name="quantity" min="0" value="20"', form)  # no stock
+        self.assertIn(f'<a href="/parts/{part_id}">Cancel</a>', form)
+        self.assertEqual(self.client.get("/parts/new?copy=999").status_code, 404)
+
+        response = self.client.post(f"/parts/new?copy={part_id}", data={"name": "ne555", "package": "SOIC-8"})
+        self.assertIn("already exists", response.get_data(as_text=True))
+        self.assertIn("A copy of", response.get_data(as_text=True))
+        self.add_part(name="NE556")
+        with self.inventory() as inv:
+            self.assertEqual(len(inv.list_parts()), 2)
+
+    def test_attribute_search(self):
+        self.add_part(attributes="resistance = 4k7")
+        self.add_part(name="R2", attributes="resistance = 10k")
+        page = self.client.get("/?q=resistance>=10k").get_data(as_text=True)
+        self.assertIn(">R2</a>", page)
+        self.assertNotIn(">NE555</a>", page)
+        self.assertIn("is not a number", self.client.get("/?q=resistance<lots").get_data(as_text=True))
+
+    def test_bulk_changes(self):
+        self.add_part()  # 20 in Cabinet A/Drawer 1
+        self.add_part(name="LM358", quantity="5", location="Bench")
+        self.add_part(name="BC547", quantity="", category="Transistor")
+        with self.inventory() as inv:
+            ids = {p.name: p.id for p in inv.list_parts()}
+        selected = [ids["NE555"], ids["LM358"]]
+
+        page = self.client.get("/parts/bulk", query_string={"part": selected}).get_data(as_text=True)
+        self.assertIn("Change 2 parts", page)
+        self.assertNotIn(">BC547</a>", page)
+        page = self.client.get("/parts/bulk?shown=1&filter_category=Transistor").get_data(as_text=True)
+        self.assertIn("Change 1 part<", page)
+        self.assertIn(">BC547</a>", page)
+        self.assertIn("No parts selected", self.client.get("/parts/bulk").get_data(as_text=True))
+
+        def post(**form):
+            return self.client.post("/parts/bulk", data={"part": selected, **form},
+                                    headers={"Referer": "http://localhost/parts/bulk"})
+
+        response = post(op="add_tags", tags="opamp, smd")
+        self.assertEqual(response.headers["Location"], f"/parts/bulk?part={ids['LM358']}&part={ids['NE555']}")  # by name
+        post(op="remove_tags", tags="tht")
+        post(op="category", category="Analog")
+        post(op="move", destination="Box", note="tidying up")
+        with self.inventory() as inv:
+            for name in ("NE555", "LM358"):
+                part = inv.get_part(ids[name])
+                self.assertEqual((part.category, [s.location for s in part.stock]), ("Analog", ["Box"]))
+                self.assertIn("opamp", part.tags)
+                self.assertNotIn("tht", part.tags)
+            self.assertEqual(inv.get_part(ids["NE555"]).total_quantity, 20)
+            self.assertEqual(inv.stock_history(ids["LM358"])[0].note, "tidying up")
+            self.assertEqual(inv.get_part(ids["BC547"]).category, "Transistor")
+
+        response = post(op="move", destination="")  # the error goes back to the bulk page
+        self.assertEqual(response.headers["Location"], "http://localhost/parts/bulk")
+        response = post(op="delete")
+        self.assertEqual(response.headers["Location"], "/")
+        with self.inventory() as inv:
+            self.assertEqual([p.name for p in inv.list_parts()], ["BC547"])
+        self.assertEqual(self.client.post("/parts/bulk", data={"part": [ids["BC547"]], "op": "x"}).status_code, 400)
+
+    def test_cross_site_requests_are_refused(self):
+        self.add_part()
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+
+        def delete(**headers):
+            return self.client.post("/parts/bulk", data={"part": [part_id], "op": "delete"}, headers=headers)
+
+        for headers in [{"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+                        {"Origin": "http://evil.example"}, {"Origin": "null"}, {"Origin": "http://localhost:3000"},
+                        {"Origin": "https://localhost"}, {"Origin": "http://localhost:99999"},
+                        {"Referer": "http://evil.example/page"}, {"Referer": "https://localhost/parts/bulk"}]:
+            with self.subTest(headers=headers):
+                response = delete(**headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertIn("sent from another website", response.get_data(as_text=True))
+        self.assertEqual(self.client.post("/theme", data={"theme": "dark"},
+                                          headers={"Origin": "http://evil.example"}).status_code, 403)
+        with self.inventory() as inv:
+            self.assertEqual(len(inv.list_parts()), 1)
+        self.assertEqual(self.client.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code, 200)
+
+        self.assertEqual(delete(**{"Sec-Fetch-Site": "same-origin", "Origin": "http://evil.example"}).status_code, 302)
+        self.add_part()
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+        self.assertEqual(delete(Origin="http://LOCALHOST:80").status_code, 302)  # the same origin
+        self.add_part()
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+        self.assertEqual(delete(Referer="http://localhost/parts/bulk").status_code, 302)
+
+    def test_public_url_counts_as_this_site(self):
+        client = create_app(self.db, "http://parts.lan:8080").test_client()
+        response = client.post("/theme", data={"theme": "dark"}, headers={"Origin": "http://parts.lan:8080"})
+        self.assertEqual(response.status_code, 302)
+        response = client.post("/theme", data={"theme": "dark"}, headers={"Origin": "http://parts.lan:9999"})
+        self.assertEqual(response.status_code, 403)
+        response = client.post("/theme", data={"theme": "dark"}, headers={"Origin": "https://parts.lan:8080"})
+        self.assertEqual(response.status_code, 403)
+        # Behind an HTTPS proxy, --url says which origin the browser sees.
+        client = create_app(self.db, "https://parts.lan").test_client()
+        response = client.post("/theme", data={"theme": "dark"}, headers={"Origin": "https://parts.lan"})
+        self.assertEqual(response.status_code, 302)
+
     def test_edit_part_replaces_tags_and_attributes(self):
         self.add_part()
         with self.inventory() as inv:

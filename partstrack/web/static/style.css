@@ -323,3 +323,53 @@ ul.attachments a { overflow-wrap: anywhere; }
   dl.details { grid-template-columns: 1fr; }
   dl.details dd { margin-bottom: 0.5rem; }
 }
+
+/* Stock notes and history */
+
+input.note { flex: 1 1 10rem; min-width: 8rem; }
+.nowrap { white-space: nowrap; }
+
+/* Labels. Sheets show the paper as it will be printed, so they are always
+   black on white, whatever the theme. */
+
+.sheets { overflow-x: auto; }
+.sheet {
+  position: relative;
+  overflow: hidden;
+  margin: 0 auto 1.5rem;
+  background: #ffffff;
+  color: #000000;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.label { position: absolute; overflow: hidden; }
+.label.cut { outline: 0.15mm dashed #9a9a9a; outline-offset: -0.075mm; }
+.label .qr { position: absolute; fill: #000000; }
+.label-text {
+  position: absolute;
+  overflow: hidden;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.label-title { font-weight: 700; }
+.label-detail { color: #333333; }
+form.labels-selection { margin: 0.5rem 0 1rem; }
+th.select, td.select { width: 1.5rem; }
+
+@media print {
+  header, .no-print, .flash { display: none !important; }
+  body { background: #ffffff; }
+  main { max-width: none; margin: 0; padding: 0; }
+  .sheets { overflow: visible; }
+  .sheet { margin: 0; box-shadow: none; break-after: page; }
+  .sheet:last-child { break-after: auto; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
