@@ -154,6 +154,7 @@ python3 -m venv .venv
 .venv/bin/partstrack-web                    # http://<server>:8080/, all interfaces
 .venv/bin/partstrack-web --port 9000 --db /srv/partstrack/parts.db
 .venv/bin/partstrack-web --host 127.0.0.1   # this machine only
+.venv/bin/partstrack-web --url http://parts.lan:8080/  # the address in QR codes on labels
 ```
 
 It covers the same features as the CLI: searching and filtering, adding and
@@ -185,6 +186,36 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 ```
+
+## Labels with QR codes
+
+Labels for storage locations and parts carry a QR code. Scanning it with a
+phone on your network opens the web interface: a location's label shows the
+parts stored there (and in its sublocations), a part's label shows the part.
+A location label shows the location's name, its parent path and description;
+a part label shows the name, the package (or the MPN if there is no package)
+and the description.
+
+- **Web interface:** tick locations on the Locations page or parts in the
+  parts list and choose *Print labels for selected* (or *for all*), or use the
+  *Label* button on a part's page. Choose a layout and print the page with the
+  browser at 100 % scale, without headers and footers.
+- **Desktop app:** *File → Print labels…* (Ctrl+P) or *Labels…* on the
+  Locations tab. Check the locations and parts, then preview, print or save a
+  PDF.
+
+Layouts: plain A4 paper with cut lines, A4 sticker sheets (3 × 8, 3 × 7,
+4 × 10 and 2 × 8 labels, or a custom grid copied from the sheet's packaging),
+and label printers (62 × 29 mm, 89 × 36 mm or a custom size, one label per
+page). *Start at label* skips labels that are already used on the first
+sheet. "Include sublocations" prints a location together with everything
+inside it.
+
+The QR codes contain the web interface's address as other devices reach it.
+Give it with `partstrack-web --url` (or `PARTSTRACK_URL`); otherwise the
+address you opened the page with is used, and the page warns you if that is
+`localhost`. The desktop app asks for the address once and remembers it.
+Labels need the `segno` package, which the `web` and `desktop` extras install.
 
 ## Desktop app
 
@@ -267,6 +298,8 @@ files keep the right owner:
   all-or-nothing. Transactions nest, and a failed inner block is undone on its
   own.
 - `partstrack/csvio.py` contains CSV import/export on top of `Inventory`.
+- `partstrack/labels.py` computes label layouts and contents for both the web
+  interface and the desktop app.
 - `partstrack/cli.py` is the command-line front end, a thin layer over `Inventory`.
 - `partstrack/web/` holds the web front end: a Flask app in `app.py`, plus
   Jinja templates and a stylesheet.

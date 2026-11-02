@@ -22,6 +22,7 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
   <h1>{{ part.name }}</h1>
   <div class="actions">
     <a class="button" href="{{ url_for('ui.edit_part', part_id=part.id) }}">Edit</a>
+    <a class="button" href="{{ url_for('ui.labels', part=part.id) }}">Label</a>
     <form method="post" action="{{ url_for('ui.delete_part', part_id=part.id) }}"
           onsubmit="return confirm('Delete this part and all its attachments?')">
       <button class="danger">Delete</button>

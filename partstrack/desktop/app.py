@@ -31,25 +31,34 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sqlite3
 import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, QStringListModel, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QMarginsF, QObject, QRectF, QSettings, QSizeF, QStringListModel, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QColor,
     QDesktopServices,
+    QFont,
     QGuiApplication,
     QIcon,
     QKeySequence,
+    QPageLayout,
+    QPageSize,
+    QPainter,
+    QPainterPath,
     QPalette,
+    QPen,
     QPixmap,
     QShortcut,
+    QTextOption,
 )
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrintPreviewDialog
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -58,8 +67,10 @@ from PySide6.QtWidgets import (
     QCompleter,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -85,6 +96,25 @@ from PySide6.QtWidgets import (
 from .. import LOGO_PATH, REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import ImportResult, decode_csv, export_csv, import_csv
+from ..labels import (
+    CUSTOM_LAYOUT_NAMES,
+    CUSTOM_PRINTER,
+    CUSTOM_SHEET,
+    CUSTOM_SHEET_OPTIONS,
+    DEFAULT_LAYOUT,
+    LAYOUTS,
+    Label,
+    Layout,
+    geometry,
+    is_local_url,
+    layout_from_options,
+    location_label,
+    normalize_base_url,
+    part_label,
+    positions,
+    qr_matrix,
+    select_locations,
+)
 from ..store import (
     EDITABLE_FIELDS,
     NEW_PART_NOTE,
@@ -677,6 +707,338 @@ class AboutDialog(QDialog):
         layout.addWidget(buttons)
 
 
+# -- labels -------------------------------------------------------------------
+
+
+def paint_labels(printer: QPrinter, layout: Layout, labels: list[Label], start: int = 0) -> None:
+    """Draw labels onto `printer` (a real printer or a PDF file), one page per sheet.
+    The positions are the same as on the web interface's labels page."""
+    width, height = layout.page_width, layout.page_height
+    # Qt treats custom page sizes as portrait; wide labels need landscape.
+    landscape = width > height
+    size = QPageSize(QSizeF(height, width) if landscape else QSizeF(width, height), QPageSize.Unit.Millimeter,
+                     layout.name, QPageSize.SizeMatchPolicy.ExactMatch)
+    orientation = QPageLayout.Orientation.Landscape if landscape else QPageLayout.Orientation.Portrait
+    printer.setFullPage(True)
+    printer.setPageLayout(QPageLayout(size, orientation, QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter))
+
+    dots = printer.resolution() / 25.4  # device pixels per mm
+    g = geometry(layout)
+    title_font, text_font = QFont(), QFont()
+    title_font.setBold(True)
+    title_font.setPixelSize(max(1, round(g.title_size * dots)))
+    text_font.setPixelSize(max(1, round(g.text_size * dots)))
+    wrap = QTextOption()
+    wrap.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)  # like overflow-wrap: anywhere
+    items = iter(labels)
+    painter = QPainter(printer)
+    try:
+        for number, page in enumerate(positions(layout, len(labels), start)):
+            if number:
+                printer.newPage()
+            for x, y in page:
+                label = next(items)
+                painter.save()
+                painter.translate(x * dots, y * dots)
+                if layout.cut_lines:
+                    pen = QPen(QColor("#9a9a9a"), 0.15 * dots, Qt.PenStyle.DashLine)
+                    painter.setPen(pen)
+                    painter.drawRect(QRectF(0, 0, layout.label_width * dots, layout.label_height * dots))
+                matrix = qr_matrix(label.url)
+                module = g.qr_size / (len(matrix) + 4) * dots  # with a quiet zone of 2 modules
+                left, top = g.qr_x * dots + 2 * module, g.qr_y * dots + 2 * module
+                # One path for the whole code, so neighbouring modules leave no hairline gaps.
+                code = QPainterPath()
+                code.setFillRule(Qt.FillRule.WindingFill)
+                for row, modules in enumerate(matrix):
+                    for column, dark in enumerate(modules):
+                        if dark:
+                            code.addRect(QRectF(left + column * module, top + row * module, module, module))
+                painter.fillPath(code.simplified(), Qt.GlobalColor.black)
+                text = QRectF(g.text_x * dots, g.text_y * dots, g.text_width * dots, g.text_height * dots)
+                painter.setClipRect(text)
+                painter.setPen(Qt.GlobalColor.black)
+                line_top = text.top()
+                for font, line in [(title_font, label.title), (text_font, label.subtitle),
+                                   (text_font, label.detail)]:
+                    if not line:
+                        continue
+                    painter.setFont(font)
+                    area = QRectF(text.left(), line_top, text.width(), text.bottom() - line_top)
+                    painter.drawText(area, line, wrap)
+                    line_top += painter.boundingRect(area, line, wrap).height()
+                painter.restore()
+    finally:
+        painter.end()
+
+
+class LabelDialog(QDialog):
+    """Choose locations and parts, a layout and the web interface's address,
+    then preview, print or save labels as PDF. The choices are remembered."""
+
+    SIZE_FIELDS = {
+        "label_width": "Label width", "label_height": "Label height", "columns": "Columns", "rows": "Rows",
+        "margin_left": "Left margin", "margin_top": "Top margin",
+        "gap_x": "Gap between columns", "gap_y": "Gap between rows",
+    }
+
+    def __init__(self, inv: Inventory, settings: QSettings, parent: QWidget | None = None, *,
+                 location_paths: list[str] = (), part_ids: list[int] = ()):
+        super().__init__(parent)
+        self.setWindowTitle("Print labels")
+        self.resize(640, 720)
+        self.inv = inv
+        self.settings = settings
+        self.locations = inv.list_locations()
+        try:
+            stored = json.loads(settings.value("labels/options", "") or "{}")
+        except ValueError:
+            stored = {}
+        options = {**CUSTOM_SHEET_OPTIONS, **(stored if isinstance(stored, dict) else {})}
+
+        # Locations, as a tree with checkboxes.
+        self.location_tree = QTreeWidget()
+        self.location_tree.setHeaderLabels(["Location", "Description"])
+        items: dict[int, QTreeWidgetItem] = {}
+        for location in self.locations:
+            item = QTreeWidgetItem([location.name, location.description])
+            item.setData(0, ROLE_ID, location.path)
+            item.setCheckState(0, Qt.CheckState.Checked if location.path in location_paths
+                               else Qt.CheckState.Unchecked)
+            parent_item = items.get(location.parent_id)
+            if parent_item is None:
+                self.location_tree.addTopLevelItem(item)
+            else:
+                parent_item.addChild(item)
+            items[location.id] = item
+        self.location_tree.expandAll()
+        self.location_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.sublocations = QCheckBox("Include sublocations of checked locations")
+        self.sublocations.setChecked(settings.value("labels/sublocations", "true") == "true")
+        location_page = QWidget()
+        location_layout = QVBoxLayout(location_page)
+        location_layout.addWidget(self.location_tree)
+        location_layout.addWidget(self.sublocations)
+        location_layout.addLayout(self._check_buttons(self.location_tree))
+
+        # Parts, as a filterable list with checkboxes.
+        self.part_filter = QLineEdit()
+        self.part_filter.setPlaceholderText("Filter…")
+        self.part_filter.setClearButtonEnabled(True)
+        self.part_filter.textChanged.connect(self._filter_parts)
+        self.part_list = QTreeWidget()
+        self.part_list.setHeaderLabels(["Name", "Package / MPN", "Description"])
+        self.part_list.setRootIsDecorated(False)
+        for part in inv.list_parts():
+            item = QTreeWidgetItem([part.name, part.package or part.mpn, part.description])
+            item.setData(0, ROLE_ID, part.id)
+            item.setCheckState(0, Qt.CheckState.Checked if part.id in part_ids else Qt.CheckState.Unchecked)
+            self.part_list.addTopLevelItem(item)
+        self.part_list.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        part_page = QWidget()
+        part_layout = QVBoxLayout(part_page)
+        part_layout.addWidget(self.part_filter)
+        part_layout.addWidget(self.part_list)
+        part_layout.addLayout(self._check_buttons(self.part_list))
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(location_page, "Locations")
+        self.tabs.addTab(part_page, "Parts")
+        if part_ids and not location_paths:
+            self.tabs.setCurrentWidget(part_page)
+
+        # Layout and address.
+        self.layout_combo = QComboBox()
+        for layout in LAYOUTS.values():
+            self.layout_combo.addItem(layout.name, layout.key)
+        for key, name in CUSTOM_LAYOUT_NAMES.items():
+            self.layout_combo.addItem(name, key)
+        index = self.layout_combo.findData(options.get("layout", DEFAULT_LAYOUT))
+        self.layout_combo.setCurrentIndex(max(index, 0))
+        self.size_fields: dict[str, QSpinBox | QDoubleSpinBox] = {}
+        # Always shown, so their values stay visible; enabled only for the custom layouts.
+        sizes = QGridLayout()
+        for index, (name, text) in enumerate(self.SIZE_FIELDS.items()):
+            if isinstance(CUSTOM_SHEET_OPTIONS[name], int):
+                field = QSpinBox()
+                field.setRange(1, 50)
+                field.setValue(int(options.get(name, CUSTOM_SHEET_OPTIONS[name])))
+            else:
+                field = QDoubleSpinBox()
+                field.setRange(0, 300)
+                field.setDecimals(1)
+                field.setSuffix(" mm")
+                field.setValue(float(options.get(name, CUSTOM_SHEET_OPTIONS[name])))
+            field.valueChanged.connect(self._layout_changed)
+            self.size_fields[name] = field
+            row, column = divmod(index, 2)
+            label = QLabel(text + ":")
+            label.setBuddy(field)
+            sizes.addWidget(label, row, 2 * column)
+            sizes.addWidget(field, row, 2 * column + 1)
+        sizes.setContentsMargins(0, 0, 0, 0)
+        self.custom_box = QWidget()
+        self.custom_box.setLayout(sizes)
+        self.start = QSpinBox()
+        self.start.setToolTip("Skip labels already used on the first sheet")
+        self.url = QLineEdit(settings.value("labels/url", ""))
+        self.url.setPlaceholderText("e.g. http://parts.lan:8080/")
+        self.url.setToolTip("The address of partstrack-web as your phone reaches it; the QR codes link there")
+        self.layout_combo.currentIndexChanged.connect(self._layout_changed)
+
+        form = QFormLayout()
+        form.addRow("Layout:", self.layout_combo)
+        form.addRow("Custom size:", self.custom_box)
+        form.addRow("Start at label:", self.start)
+        form.addRow("Web interface:", self.url)
+
+        preview = QPushButton("Preview…")
+        preview.clicked.connect(lambda: self.preview())
+        print_button = QPushButton("Print…")
+        print_button.clicked.connect(lambda: self.print_labels())
+        pdf = QPushButton("Save as PDF…")
+        pdf.clicked.connect(lambda: self.choose_pdf())
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.tabs, 1)
+        layout.addLayout(form)
+        layout.addLayout(button_row(preview, print_button, pdf, close))
+        self._layout_changed()
+
+    def _check_buttons(self, tree: QTreeWidget) -> QHBoxLayout:
+        def check_all(state: Qt.CheckState) -> None:
+            for item in self._items(tree):
+                if not item.isHidden():
+                    item.setCheckState(0, state)
+
+        check = QPushButton("Check all")
+        check.clicked.connect(lambda: check_all(Qt.CheckState.Checked))
+        uncheck = QPushButton("Uncheck all")
+        uncheck.clicked.connect(lambda: check_all(Qt.CheckState.Unchecked))
+        return button_row(check, uncheck)
+
+    @staticmethod
+    def _items(tree: QTreeWidget) -> list[QTreeWidgetItem]:
+        found = []
+
+        def walk(item: QTreeWidgetItem) -> None:
+            for i in range(item.childCount()):
+                found.append(item.child(i))
+                walk(item.child(i))
+
+        walk(tree.invisibleRootItem())
+        return found
+
+    def _filter_parts(self, text: str) -> None:
+        words = nocase(text).split()
+        for item in self._items(self.part_list):
+            haystack = nocase(" ".join(item.text(column) for column in range(3)))
+            item.setHidden(not all(word in haystack for word in words))
+
+    def options(self) -> dict[str, str]:
+        options = {"layout": self.layout_combo.currentData()}
+        options.update({name: str(field.value()) for name, field in self.size_fields.items()})
+        return options
+
+    def _layout_changed(self) -> None:
+        key = self.layout_combo.currentData()
+        for name, field in self.size_fields.items():
+            field.setEnabled(key == CUSTOM_SHEET or (key == CUSTOM_PRINTER and name in ("label_width", "label_height")))
+        try:
+            per_page = layout_from_options(self.options()).per_page
+        except InventoryError:
+            per_page = 1
+        self.start.setRange(1, per_page)
+
+    def checked_locations(self) -> list[Location]:
+        paths = [item.data(0, ROLE_ID) for item in self._items(self.location_tree)
+                 if item.checkState(0) == Qt.CheckState.Checked]
+        return select_locations(self.locations, paths, sublocations=self.sublocations.isChecked())
+
+    def checked_part_ids(self) -> list[int]:
+        return [item.data(0, ROLE_ID) for item in self._items(self.part_list)
+                if item.checkState(0) == Qt.CheckState.Checked]
+
+    def labels(self) -> tuple[Layout, list[Label]]:
+        """The chosen layout and labels; raises InventoryError if something is missing."""
+        layout = layout_from_options(self.options())
+        if not self.url.text().strip():
+            raise InventoryError("please enter the web interface's address, which the QR codes link to")
+        base_url = normalize_base_url(self.url.text())
+        labels = [location_label(base_url, l) for l in self.checked_locations()]
+        labels += [part_label(base_url, self.inv.get_part(part_id)) for part_id in self.checked_part_ids()]
+        if not labels:
+            raise InventoryError("please check the locations or parts to print labels for")
+        return layout, labels
+
+    def _prepared(self) -> tuple[Layout, list[Label]] | None:
+        """The layout and labels, after showing any problem; remembers the choices."""
+        try:
+            layout, labels = self.labels()
+        except InventoryError as e:
+            show_error(self, e)
+            return None
+        if is_local_url(self.url.text()) and not confirm(
+            self, "The web interface's address only works on this computer, so phones can't open the "
+                  "QR codes. Print anyway?"):
+            return None
+        self.settings.setValue("labels/options", json.dumps(self.options()))
+        self.settings.setValue("labels/url", normalize_base_url(self.url.text()))
+        self.settings.setValue("labels/sublocations", "true" if self.sublocations.isChecked() else "false")
+        return layout, labels
+
+    def paint(self, printer: QPrinter) -> None:
+        layout, labels = self.labels()
+        paint_labels(printer, layout, labels, self.start.value() - 1)
+
+    def preview(self) -> None:
+        if self._prepared() is None:
+            return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        dialog = self.preview_dialog(printer)
+        run_dialog(dialog)
+        self.settings.setValue("labels/preview_geometry", dialog.saveGeometry())
+
+    def preview_dialog(self, printer: QPrinter) -> QPrintPreviewDialog:
+        """A preview window with its last size, or most of the screen the first time."""
+        dialog = QPrintPreviewDialog(printer, self)
+        dialog.paintRequested.connect(self.paint)
+        geometry = self.settings.value("labels/preview_geometry")
+        if not geometry or not dialog.restoreGeometry(geometry):
+            screen = self.screen().availableGeometry()
+            dialog.resize(int(screen.width() * 0.8), int(screen.height() * 0.85))
+        return dialog
+
+    def print_labels(self) -> None:
+        prepared = self._prepared()
+        if prepared is None:
+            return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        if run_dialog(QPrintDialog(printer, self)):
+            paint_labels(printer, *prepared, self.start.value() - 1)  # sets the page size again
+
+    def choose_pdf(self) -> None:
+        if self._prepared() is None:
+            return
+        start = Path(self.settings.value("last_dir", "") or Path.home()) / "labels.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "Save labels", str(start), "PDF (*.pdf)")
+        if path:
+            self.settings.setValue("last_dir", str(Path(path).parent))
+            self.save_pdf(Path(path))
+
+    def save_pdf(self, path: Path) -> bool:
+        prepared = self._prepared()
+        if prepared is None:
+            return False
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(str(path))
+        paint_labels(printer, *prepared, self.start.value() - 1)
+        return True
+
+
 # -- part details -------------------------------------------------------------
 
 
@@ -955,7 +1317,8 @@ class MainWindow(QMainWindow):
         self.location_tree.itemDoubleClicked.connect(lambda: self.edit_location())
         buttons = []
         for text, slot in [("Add…", self.add_location), ("Edit…", self.edit_location),
-                           ("Delete", self.delete_location), ("Show parts", self.show_location_parts)]:
+                           ("Delete", self.delete_location), ("Show parts", self.show_location_parts),
+                           ("Labels…", self.print_labels)]:
             button = QPushButton(text)
             button.clicked.connect(lambda checked=False, slot=slot: slot())
             buttons.append(button)
@@ -979,6 +1342,8 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._action(file_menu, "&Import CSV…", self.choose_import)
         self._action(file_menu, "&Export CSV…", self.choose_export)
+        file_menu.addSeparator()
+        self._action(file_menu, "Print &labels…", self.print_labels, QKeySequence.StandardKey.Print)
         file_menu.addSeparator()
         self._action(file_menu, "&Quit", self.close, QKeySequence.StandardKey.Quit)
 
@@ -1300,6 +1665,15 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(0)
 
     # -- CSV ------------------------------------------------------------------
+
+    def print_labels(self) -> None:
+        """Open the label dialog with the selected location or part checked."""
+        on_locations = self.tabs.currentIndex() == 1
+        location = self.selected_location_path() if on_locations else None
+        part = None if on_locations else self.current_part()
+        dialog = LabelDialog(self.inv, self.settings, self, location_paths=[location] if location else [],
+                             part_ids=[part.id] if part else [])
+        run_dialog(dialog)
 
     def choose_import(self) -> None:
         dialog = ImportDialog(self.inv.list_locations(), self.settings.value("last_dir", ""), self)

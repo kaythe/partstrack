@@ -251,6 +251,68 @@ class DesktopTest(unittest.TestCase):
         with self.inventory() as inv:
             self.assertIsNone(inv.get_part(part.id).min_quantity)
 
+    def test_print_labels_as_pdf(self):
+        with self.inventory() as inv:
+            part_id = inv.add_part("NE555", package="DIP-8")
+            inv.set_stock(part_id, "Lab/Cabinet A/Drawer 3", 5)
+            inv.add_location("Shelf")
+        self.window.refresh()
+        settings = self.window.settings
+        dialog = desktop.LabelDialog(self.window.inv, settings, self.window, location_paths=["Lab/Cabinet A"],
+                                     part_ids=[part_id])
+        self.addCleanup(dialog.deleteLater)
+        pdf = self.dir / "labels.pdf"
+        self.assertFalse(dialog.save_pdf(pdf))  # no address yet
+        self.assertIn("address", self.errors[-1])
+
+        dialog.url.setText("http://parts.lan:8080")
+        dialog.layout_combo.setCurrentIndex(dialog.layout_combo.findData("printer-62x29"))
+        self.assertEqual(dialog.start.maximum(), 1)
+        self.assertEqual([l.path for l in dialog.checked_locations()], ["Lab/Cabinet A", "Lab/Cabinet A/Drawer 3"])
+        self.assertTrue(dialog.save_pdf(pdf))
+        self.assertEqual(pdf.read_bytes().count(b"/Type /Page\n") + pdf.read_bytes().count(b"/Type /Page\r"), 3)
+
+        dialog.sublocations.setChecked(False)
+        dialog.layout_combo.setCurrentIndex(dialog.layout_combo.findData("plain-4x10"))
+        dialog.start.setValue(40)  # the last place: the second label goes on a new page
+        self.assertTrue(dialog.save_pdf(pdf))
+        self.assertEqual(pdf.read_bytes().count(b"/Type /Page\n") + pdf.read_bytes().count(b"/Type /Page\r"), 2)
+
+        dialog.url.setText("http://localhost:8080")
+        self.answers.append(False)
+        self.assertFalse(dialog.save_pdf(pdf))  # declined the warning about a local address
+
+        dialog = desktop.LabelDialog(self.window.inv, settings, self.window)  # remembers the choices
+        self.addCleanup(dialog.deleteLater)
+        self.assertEqual(dialog.layout_combo.currentData(), "plain-4x10")
+        self.assertEqual(dialog.url.text(), "http://parts.lan:8080/")
+        self.assertFalse(dialog.sublocations.isChecked())
+        dialog.part_filter.setText("555")
+        self.assertFalse(dialog.part_list.topLevelItem(0).isHidden())
+        dialog.part_filter.setText("xyz")
+        self.assertTrue(dialog.part_list.topLevelItem(0).isHidden())
+
+    def test_label_dialog_layout_fields_and_preview_size(self):
+        dialog = desktop.LabelDialog(self.window.inv, self.window.settings, self.window)
+        self.addCleanup(dialog.deleteLater)
+        enabled = lambda: {name for name, field in dialog.size_fields.items() if field.isEnabled()}
+        self.assertEqual(enabled(), set())  # a preset
+        dialog.layout_combo.setCurrentIndex(dialog.layout_combo.findData("custom-printer"))
+        self.assertEqual(enabled(), {"label_width", "label_height"})
+        dialog.layout_combo.setCurrentIndex(dialog.layout_combo.findData("custom-sheet"))
+        self.assertEqual(enabled(), set(dialog.size_fields))
+        self.assertTrue(dialog.custom_box.isVisibleTo(dialog))
+
+        preview = dialog.preview_dialog(desktop.QPrinter())
+        self.addCleanup(preview.deleteLater)
+        screen = dialog.screen().availableGeometry()
+        self.assertGreater(preview.width(), screen.width() // 2)
+        preview.resize(700, 500)
+        self.window.settings.setValue("labels/preview_geometry", preview.saveGeometry())
+        again = dialog.preview_dialog(desktop.QPrinter())
+        self.addCleanup(again.deleteLater)
+        self.assertEqual((again.width(), again.height()), (700, 500))
+
     def test_attachments_from_the_part_view(self):
         with serve({"/ds.pdf": (200, "application/pdf", b"%PDF")}) as base:
             with self.inventory() as inv:

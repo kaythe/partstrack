@@ -1,0 +1,102 @@
+{#
+partstrack - a small inventory for electronic parts
+Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-#}
+{% extends "base.html" %}
+{% block title %}Labels{% endblock %}
+{% block content %}
+{# The page size can only be set in CSS; the numbers come from the layout, never from stored data. #}
+<style>@page { size: {{ layout.page_width }}mm {{ layout.page_height }}mm; margin: 0; }</style>
+<div class="no-print">
+<h1>Labels</h1>
+
+<form class="stack" method="get">
+  {% for name, value in selection %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  <div class="grid">
+    <label>Layout
+      <select name="layout">
+        {% for group, prefix in [("Plain paper, to cut out", "plain-"), ("Sticker sheets (A4)", "sheet-"), ("Label printers", "printer-")] %}
+        <optgroup label="{{ group }}">
+          {% for key, l in layouts.items() if key.startswith(prefix) %}
+          <option value="{{ key }}" {% if key == options.layout %}selected{% endif %}>{{ l.name.partition(": ")[2] }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+        <optgroup label="Custom">
+          {% for key, name in custom_layouts.items() %}
+          <option value="{{ key }}" {% if key == options.layout %}selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </optgroup>
+      </select>
+    </label>
+    <label>Start at label
+      <input type="number" name="start" min="1" max="{{ layout.per_page }}" value="{{ start }}"
+             title="Skip labels already used on the first sheet">
+    </label>
+  </div>
+  <details {% if options.layout in custom_layouts %}open{% endif %}>
+    <summary>Custom size</summary>
+    <p class="muted small">Used with the custom layouts. Sizes in mm; label printers use only the label size.</p>
+    <div class="grid">
+      {% for name, label in [("label_width", "Label width"), ("label_height", "Label height"),
+                             ("columns", "Columns"), ("rows", "Rows"),
+                             ("margin_left", "Left margin"), ("margin_top", "Top margin"),
+                             ("gap_x", "Gap between columns"), ("gap_y", "Gap between rows")] %}
+      <label>{{ label }} <input name="{{ name }}" value="{{ options[name] }}" inputmode="decimal"></label>
+      {% endfor %}
+    </div>
+  </details>
+  <div class="actions"><button>Update</button></div>
+</form>
+
+{% if local_url %}
+<p class="flash error">The QR codes link to {{ base_url }}, which only works on this computer. Open this page by
+  the server's network address, or start <code>partstrack-web</code> with <code>--url</code>.</p>
+{% else %}
+<p class="muted small">The QR codes link to {{ base_url }}.</p>
+{% endif %}
+{% if count %}
+<p>{{ count }} label{{ "" if count == 1 else "s" }} on {{ sheets|length }} page{{ "" if sheets|length == 1 else "s" }}.
+  Print with your browser (Ctrl+P) at 100&nbsp;% scale, without headers and footers.</p>
+{% else %}
+<p class="empty">No labels selected. Tick locations on the <a href="{{ url_for('ui.locations') }}">Locations</a>
+  page or parts in the <a href="{{ url_for('ui.parts') }}">Parts</a> list, then choose “Print labels”.</p>
+{% endif %}
+</div>
+
+<div class="sheets">
+{% set g = geometry %}
+{% for sheet in sheets %}
+<div class="sheet" style="width: {{ layout.page_width }}mm; height: {{ layout.page_height }}mm">
+  {% for item in sheet %}
+  <div class="label{% if layout.cut_lines %} cut{% endif %}"
+       style="left: {{ item.x }}mm; top: {{ item.y }}mm; width: {{ layout.label_width }}mm; height: {{ layout.label_height }}mm">
+    <svg class="qr" viewBox="-2 -2 {{ item.modules + 4 }} {{ item.modules + 4 }}" role="img" aria-label="QR code"
+         style="left: {{ g.qr_x }}mm; top: {{ g.qr_y }}mm; width: {{ g.qr_size }}mm; height: {{ g.qr_size }}mm">
+      <path d="{{ item.qr }}"/>
+    </svg>
+    <div class="label-text" style="left: {{ g.text_x }}mm; top: {{ g.text_y }}mm; width: {{ g.text_width }}mm;
+                                   height: {{ g.text_height }}mm; font-size: {{ g.text_size }}mm">
+      <div class="label-title" style="font-size: {{ g.title_size }}mm">{{ item.label.title }}</div>
+      {% if item.label.subtitle %}<div>{{ item.label.subtitle }}</div>{% endif %}
+      {% if item.label.detail %}<div class="label-detail">{{ item.label.detail }}</div>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+</div>
+{% endblock %}

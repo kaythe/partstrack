@@ -148,6 +148,49 @@ class WebTest(unittest.TestCase):
         self.assertEqual(self.client.get("/history?part=999").status_code, 404)
         self.assertIn("no location", self.client.get("/history?location=/Nowhere").get_data(as_text=True))
 
+    def test_labels(self):
+        self.add_part(package="DIP-8", description="<b>timer</b>")
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+            inv.add_location("Cabinet A/Drawer 2")
+            inv.add_location("Shelf")
+        self.assertIn('form="labels"', self.client.get("/locations").get_data(as_text=True))
+        self.assertIn('name="part" value="%d" form="labels"' % part_id, self.client.get("/").get_data(as_text=True))
+
+        response = self.client.get(f"/labels?location=/Cabinet A&sublocations=1&part={part_id}"
+                                   "&layout=sheet-3x8-70x37&start=3")
+        page = response.get_data(as_text=True)
+        self.assertEqual(page.count('<svg class="qr"'), 4)
+        self.assertIn("left: 0.0mm; top: 37.5mm", page)  # the third place is the first of row 2
+        self.assertIn("&lt;b&gt;timer&lt;/b&gt;", page)
+        self.assertIn("DIP-8", page)
+        self.assertIn("@page { size: 210.0mm 297.0mm; margin: 0; }", page)
+        self.assertIn("only works on this computer", page)  # the test client is localhost
+        self.assertIn("sheet-3x8-70x37", response.headers["Set-Cookie"])
+
+        page = self.client.get("/labels?all_locations=1").get_data(as_text=True)  # layout from the cookie
+        self.assertEqual(page.count('<svg class="qr"'), 4)
+        self.assertIn('value="sheet-3x8-70x37" selected', page)
+        page = self.client.get("/labels?shown=1&filter_q=555").get_data(as_text=True)
+        self.assertEqual(page.count('<svg class="qr"'), 1)
+        page = self.client.get("/labels?location=/Shelf&layout=printer-62x29").get_data(as_text=True)
+        self.assertIn("@page { size: 62.0mm 29.0mm; margin: 0; }", page)
+
+        page = self.client.get("/labels?location=/Shelf&layout=custom-sheet&columns=9").get_data(as_text=True)
+        self.assertIn("more than the page", page)
+        page = self.client.get("/labels?location=/Shelf&start=99").get_data(as_text=True)
+        self.assertIn("must be between 1 and", page)
+        self.assertIn("No labels selected", self.client.get("/labels").get_data(as_text=True))
+        self.assertEqual(self.client.get("/labels?part=999").status_code, 404)
+
+    def test_labels_use_the_public_url(self):
+        client = create_app(self.db, "http://parts.lan:8080").test_client()
+        with self.inventory() as inv:
+            inv.add_location("Shelf")
+        page = client.get("/labels?location=/Shelf").get_data(as_text=True)
+        self.assertIn("The QR codes link to http://parts.lan:8080/.", page)
+        self.assertNotIn("only works on this computer", page)
+
     def test_edit_part_replaces_tags_and_attributes(self):
         self.add_part()
         with self.inventory() as inv:

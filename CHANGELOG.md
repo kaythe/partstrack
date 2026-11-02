@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a part's page, on the web interface's new History page, and in the
   desktop app's part view. Existing stock is recorded as `initial` entries
   when the database is upgraded.
+- Labels with QR codes for locations and parts, printed in batches from the
+  web interface (checkboxes on the Locations and Parts pages) or the desktop
+  app (File → Print labels…, also as PDF). Scanning a label opens the
+  location's parts or the part in the web interface. Layouts for plain paper
+  with cut lines, A4 sticker sheets and label printers, plus custom sizes and
+  a start position for partly used sheets. `partstrack-web --url` sets the
+  address in the codes. The `web` and `desktop` extras now include `segno`.
 
 ## [1.0.0] - 2026-10-30
 

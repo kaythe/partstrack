@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 import tempfile
@@ -45,6 +46,7 @@ from flask import (
     current_app,
     flash,
     g,
+    make_response,
     redirect,
     render_template,
     request,
@@ -56,12 +58,29 @@ from werkzeug.datastructures import FileStorage
 from .. import LOGO_PATH, REPOSITORY_URL, __version__
 from ..cli import default_db_path
 from ..csvio import decode_csv, export_csv, import_csv
+from ..labels import (
+    CUSTOM_LAYOUT_NAMES,
+    CUSTOM_SHEET_OPTIONS,
+    DEFAULT_LAYOUT,
+    LAYOUTS,
+    geometry,
+    is_local_url,
+    layout_from_options,
+    location_label,
+    normalize_base_url,
+    part_label,
+    positions,
+    qr_matrix,
+    select_locations,
+    svg_path,
+)
 from ..store import (
     ATTACHMENT_KINDS,
     EDITABLE_FIELDS,
     NEW_PART_NOTE,
     Inventory,
     InventoryError,
+    Location,
     NotFoundError,
     Part,
     downloadable_name,
@@ -71,10 +90,13 @@ from ..store import (
 bp = Blueprint("ui", __name__)
 
 
-def create_app(db_path: str | Path) -> Flask:
+def create_app(db_path: str | Path, public_url: str | None = None) -> Flask:
+    """`public_url` is the address other devices reach this site at, for the
+    QR codes on labels; without it, the address of each request is used."""
     app = Flask(__name__)
     app.config.update(
         PARTSTRACK_DB=str(db_path),
+        PARTSTRACK_URL=normalize_base_url(public_url) if public_url else None,
         # Only used to sign the cookie that carries flash messages.
         SECRET_KEY=os.environ.get("PARTSTRACK_SECRET") or os.urandom(32),
         MAX_CONTENT_LENGTH=100 * 1024 * 1024,
@@ -443,6 +465,110 @@ def history():
     )
 
 
+# -- labels -------------------------------------------------------------------
+
+LABELS_COOKIE = "labels"
+LABEL_OPTIONS = ("layout", *CUSTOM_SHEET_OPTIONS)  # the custom printer's options are a subset
+PART_FILTERS = ("q", "tag", "location", "category", "low")  # passed as filter_<name>
+
+
+@bp.get("/labels")
+def labels():
+    """Printable labels for the chosen locations and parts. The selection comes
+    from the checkboxes on the locations and parts pages; the layout from the
+    form on this page, and is remembered in a cookie."""
+    inv = inventory()
+    remember = "layout" in request.args
+    if remember:
+        options = {name: value for name in LABEL_OPTIONS if (value := request.args.get(name, "").strip())}
+    else:
+        options = _label_options_cookie()
+    try:
+        layout = layout_from_options(options)
+    except InventoryError as e:
+        flash(str(e), "error")
+        remember = False
+        layout = LAYOUTS[DEFAULT_LAYOUT]
+    try:
+        start = (_parse_int(request.args.get("start", "").strip(), "The first label's position",
+                            allow_empty=True) or 1) - 1
+        positions(layout, 0, start)
+    except InventoryError as e:
+        flash(str(e), "error")
+        start = 0
+
+    try:
+        locations, parts = _selected_for_labels(inv)
+    except NotFoundError:
+        raise  # a missing part or location is a 404 page
+    except InventoryError as e:  # e.g. an ambiguous location
+        flash(str(e), "error")
+        locations, parts = [], []
+
+    base_url = current_app.config["PARTSTRACK_URL"] or request.host_url
+    items = iter([location_label(base_url, l) for l in locations] + [part_label(base_url, p) for p in parts])
+    sheets = []
+    for page in positions(layout, len(locations) + len(parts), start):
+        sheet = []
+        for x, y in page:
+            label = next(items)
+            matrix = qr_matrix(label.url)
+            sheet.append({"x": x, "y": y, "label": label, "qr": svg_path(matrix), "modules": len(matrix)})
+        sheets.append(sheet)
+
+    response = make_response(render_template(
+        "labels.html",
+        sheets=sheets,
+        count=len(locations) + len(parts),
+        layout=layout,
+        geometry=geometry(layout),
+        options={**CUSTOM_SHEET_OPTIONS, **options, "layout": layout.key},
+        layouts=LAYOUTS,
+        custom_layouts=CUSTOM_LAYOUT_NAMES,
+        start=start + 1,
+        selection=_label_selection(),
+        base_url=base_url,
+        local_url=is_local_url(base_url),
+    ))
+    if remember:
+        response.set_cookie(LABELS_COOKIE, json.dumps({**options, "layout": layout.key}),
+                            max_age=365 * 24 * 3600, samesite="Lax")
+    return response
+
+
+def _selected_for_labels(inv: Inventory) -> tuple[list[Location], list[Part]]:
+    all_locations = inv.list_locations()
+    if request.args.get("all_locations"):
+        paths = [l.path for l in all_locations]
+    else:
+        paths = [inv.location_path(ref) for ref in request.args.getlist("location") if ref.strip()]
+    locations = select_locations(all_locations, paths, sublocations=bool(request.args.get("sublocations")))
+    if request.args.get("shown"):
+        filters = {name: request.args.get("filter_" + name, "").strip() for name in PART_FILTERS}
+        parts = inv.list_parts(filters["q"], tag=filters["tag"] or None, location=filters["location"] or None,
+                               category=filters["category"] or None, low=bool(filters["low"]))
+    else:
+        part_ids = dict.fromkeys(int(i) for i in request.args.getlist("part") if i.isdigit())
+        parts = [inv.get_part(part_id) for part_id in part_ids]
+    return locations, parts
+
+
+def _label_options_cookie() -> dict[str, str]:
+    try:
+        stored = json.loads(request.cookies.get(LABELS_COOKIE, "{}"))
+    except ValueError:
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {name: str(stored[name]) for name in LABEL_OPTIONS if name in stored}
+
+
+def _label_selection() -> list[tuple[str, str]]:
+    """The request's selection parameters, to keep them when the layout form is sent."""
+    names = ("location", "all_locations", "sublocations", "part", "shown", *("filter_" + f for f in PART_FILTERS))
+    return [(name, value) for name in names for value in request.args.getlist(name)]
+
+
 # -- locations ----------------------------------------------------------------
 
 
@@ -571,16 +697,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="0.0.0.0",
                         help="address to listen on (default: all interfaces; use 127.0.0.1 for this machine only)")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--url", default=os.environ.get("PARTSTRACK_URL"),
+                        help="address of this site as other devices reach it, e.g. http://parts.lan:8080/, "
+                             "for the QR codes on labels (default: $PARTSTRACK_URL, or the address in each request)")
     parser.add_argument("--debug", action="store_true", help="use Flask's auto-reloading development server")
     args = parser.parse_args(argv)
 
     db_path = args.db or default_db_path()
     try:
         Inventory(db_path).close()  # create or upgrade the database once, before serving
+        app = create_app(db_path, args.url)
     except InventoryError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    app = create_app(db_path)
     if args.debug:
         app.run(host=args.host, port=args.port, debug=True)
     else:
