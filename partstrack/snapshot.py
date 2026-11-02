@@ -49,6 +49,7 @@ COPY_INFO = "partstrack-copy.json"
 TEMP_PREFIX = ".partstrack-"  # downloads and unpacking in progress, inside the copy's folder
 SNAPSHOT_PATH = "api/snapshot"
 DOWNLOAD_TIMEOUT = 60  # seconds without data
+SQLITE_HEADER = b"SQLite format 3\x00"  # the first bytes of every SQLite database file
 
 
 SERVER, BACKUP = "server", "backup"  # kinds of copies
@@ -131,6 +132,11 @@ def unpack_copy(archive: Path, folder: Path, *, source: str, kind: str = SERVER)
         made_at = _extract(archive, staging)
         if made_at is None:
             raise InventoryError("the archive contains no database")
+        # SQLite would treat an empty or foreign file as a new database, and the
+        # migrations would turn it into an empty inventory that replaces the copy.
+        with open(staging / DATABASE, "rb") as database:
+            if database.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
+                raise InventoryError("the database in the archive is empty or not a database")
         try:
             Inventory(staging / DATABASE).close()  # upgrades an older schema; refuses a newer one
         except sqlite3.DatabaseError as e:

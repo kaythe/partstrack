@@ -118,6 +118,19 @@ class SnapshotTest(unittest.TestCase):
         self.assertFalse((self.dir / "evil").exists())
         self.assertEqual([p.name for p in (self.dir / "copy").iterdir()], [])  # nothing left behind
 
+    def test_empty_or_foreign_database_keeps_the_copy(self):
+        db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
+        for content in [b"", b"not a database at all"]:
+            archive = self.dir / "bad.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                info = tarfile.TarInfo("parts.db")
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+            with self.subTest(content=content), self.assertRaisesRegex(InventoryError, "empty or not a database"):
+                unpack_copy(archive, self.dir / "copy", source="http://a/")
+        with Inventory(db_path, read_only=True) as copy:
+            self.assertEqual([p.name for p in copy.list_parts()], ["NE555"])
+
     def test_copy_from_a_newer_server_is_refused(self):
         self.server.conn.execute(f"PRAGMA user_version = {len(MIGRATIONS) + 1}")
         with self.assertRaisesRegex(InventoryError, "newer version"):
