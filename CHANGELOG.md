@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-03
+
 ### Changed
 
 - New attachments (added files, uploads and downloaded links) are stored
@@ -160,7 +162,8 @@ First release.
 - Light/dark theme switch in the web interface, with an "Auto" setting that
   follows the device.
 
-[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/kaythe/partstrack/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/kaythe/partstrack/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kaythe/partstrack/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/kaythe/partstrack/compare/v0.2.0...v0.3.0
