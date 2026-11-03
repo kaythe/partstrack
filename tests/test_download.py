@@ -56,6 +56,13 @@ class DownloadTest(unittest.TestCase):
         self.assertEqual((stored.original_name, stored.path.read_bytes()), ("ne555.pdf", PDF))
         self.assertEqual([p.name for p in self.inv.attachments_dir.iterdir()], [str(self.part_id)])  # no temp files
 
+    def test_download_is_stored_under_a_portable_name(self):
+        with serve({"/ds/ne555%201:2.pdf": (200, "application/pdf", PDF)}) as base:
+            attachment_id = self.inv.add_attachment(self.part_id, f"{base}/ds/ne555%201:2.pdf")
+            stored = self.inv.download_attachment(attachment_id)
+        self.assertEqual((stored.original_name, stored.path.name), ("ne555 1:2.pdf", "ne555 1_2.pdf"))
+        self.assertEqual(stored.path.read_bytes(), PDF)
+
     def test_failed_downloads_keep_the_link(self):
         routes = {
             "/page.pdf": (200, "text/html", b"<html>login</html>"),

@@ -87,6 +87,7 @@ from ..store import (
     Part,
     downloadable_name,
     is_url,
+    portable_filename,
 )
 
 bp = Blueprint("ui", __name__)
@@ -265,9 +266,10 @@ def _save_uploads(inv: Inventory, part_id: int, uploads: list[FileStorage], kind
         for upload in uploads:
             if not upload or not upload.filename:
                 continue
-            path = Path(tmp) / _safe_filename(upload.filename)
+            name = _safe_filename(upload.filename)
+            path = Path(tmp) / portable_filename(name)  # the server may run on Windows
             upload.save(path)
-            inv.add_attachment(part_id, str(path), kind)
+            inv.add_attachment(part_id, str(path), kind, name=name)
 
 
 def _save_links(inv: Inventory, part_id: int, text: str, kind: str | None) -> list[int]:
