@@ -450,6 +450,23 @@ def _like_pattern(text: str) -> str:
     return f"%{escaped}%"
 
 
+# What Windows doesn't allow in file names (Linux allows everything but '/' and NUL).
+_UNPORTABLE_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def portable_filename(name: str) -> str:
+    """Return `name` as a file name that every system accepts: characters that
+    Windows doesn't allow become '_', trailing dots and spaces are removed, and
+    device names like 'CON' or 'nul.txt' get a leading '_'."""
+    name = _UNPORTABLE_CHARACTERS.sub("_", name).rstrip(" .")
+    if not name:
+        return "_"
+    if name.split(".")[0].rstrip(" ").upper() in _RESERVED_NAMES:
+        return "_" + name
+    return name
+
+
 def _unique_destination(directory: Path, name: str) -> Path:
     dest = directory / name
     n = 1
@@ -1182,6 +1199,17 @@ class Inventory:
             if row["path"]:
                 stored = self.attachments_dir / row["path"]
                 self._after_commit.append(lambda: stored.unlink(missing_ok=True))
+
+    def move_stored_attachments(self, moved: dict[str, str]) -> None:
+        """Point stored attachments to files that were renamed, given as
+        {old path: new path} relative to attachments_dir. All paths change at
+        once, so a new path may be another attachment's old one."""
+        rows = self.conn.execute("SELECT id, path FROM attachments WHERE path IS NOT NULL").fetchall()
+        with self.transaction():
+            self.conn.executemany(
+                "UPDATE attachments SET path = ? WHERE id = ?",
+                [(moved[row["path"]], row["id"]) for row in rows if row["path"] in moved],
+            )
 
     def downloadable_attachments(self, part_id: int | None = None) -> list[Attachment]:
         """Return the link attachments (of one part, or of all parts) that point to a single file."""

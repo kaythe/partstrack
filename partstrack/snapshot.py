@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .labels import normalize_base_url
-from .store import USER_AGENT, Inventory, InventoryError
+from .store import USER_AGENT, Inventory, InventoryError, portable_filename
 
 DATABASE = "parts.db"
 ATTACHMENTS = "attachments"
@@ -144,6 +144,8 @@ def unpack_copy(archive: Path, folder: Path, *, source: str, kind: str = SERVER)
     `folder` must be empty or hold an earlier copy, so no other database is ever
     overwritten. Only the database and files in 'attachments' are unpacked; the
     old copy is replaced only once the new one has been unpacked and checked.
+    Attachment files whose names some systems don't allow (a server on Linux
+    may have 'a:b.pdf') are renamed, and the copy's database follows them.
     """
     folder.mkdir(parents=True, exist_ok=True)
     for leftover in folder.glob(TEMP_PREFIX + "old-*"):  # an old copy that couldn't be deleted last time
@@ -153,7 +155,7 @@ def unpack_copy(archive: Path, folder: Path, *, source: str, kind: str = SERVER)
         raise InventoryError(f"{folder} contains other files; choose an empty folder or one with an earlier copy")
     staging = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX + "new-", dir=folder))
     try:
-        made_at = _extract(archive, staging)
+        made_at, renamed = _extract(archive, staging)
         if made_at is None:
             raise InventoryError("the archive contains no database")
         # SQLite would treat an empty or foreign file as a new database, and the
@@ -162,13 +164,17 @@ def unpack_copy(archive: Path, folder: Path, *, source: str, kind: str = SERVER)
             if database.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
                 raise InventoryError("the database in the archive is empty or not a database")
         try:
-            Inventory(staging / DATABASE).close()  # upgrades an older schema; refuses a newer one
+            copy = Inventory(staging / DATABASE)  # upgrades an older schema; refuses a newer one
         except sqlite3.DatabaseError as e:
             raise InventoryError(f"the database in the archive is damaged: {e}") from None
         except InventoryError:
             raise InventoryError(
                 "the database was made by a newer version of partstrack; update this app to open it"
             ) from None
+        try:
+            copy.move_stored_attachments(renamed)
+        finally:
+            copy.close()
         taken_at = made_at.strftime("%Y-%m-%d %H:%M:%S")
         info = {"source": source, "taken_at": taken_at, "kind": kind}
         (staging / COPY_INFO).write_text(json.dumps(info, indent=2) + "\n")
@@ -214,12 +220,18 @@ def _swap_in(staging: Path, folder: Path) -> None:
     shutil.rmtree(retired, ignore_errors=True)  # a file still in use stays behind and is removed next time
 
 
-def _extract(archive: Path, destination: Path) -> datetime | None:
+def _extract(archive: Path, destination: Path) -> tuple[datetime | None, dict[str, str]]:
     """Unpack only 'parts.db' and regular files under 'attachments/'. Anything else
     (absolute paths, '..', links, devices) means the archive isn't one of ours.
+    Names in 'attachments' are made portable (see _portable_path).
+
     Returns the time the database was written (when the snapshot or backup was
-    made), or None if the archive has no database."""
+    made), or None if the archive has no database, and the renamed attachment
+    files as {old path: new path}, relative to 'attachments' like the database's."""
     made_at = None
+    portable: dict[tuple[str, ...], tuple[str, ...]] = {}
+    taken: dict[tuple[str, ...], set[str]] = {}
+    renamed = {}
     try:
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar:
@@ -228,11 +240,15 @@ def _extract(archive: Path, destination: Path) -> datetime | None:
                     parts
                     and not member.name.startswith("/")
                     and ".." not in parts
-                    and not any("\\" in p or ":" in p for p in parts)
                     and (parts == (DATABASE,) or parts[0] == ATTACHMENTS)
                 )
                 if not allowed or not (member.isfile() or member.isdir()) or (member.isdir() and parts == (DATABASE,)):
                     raise InventoryError(f"the archive contains something unexpected: {member.name}")
+                if parts[0] == ATTACHMENTS:
+                    new_parts = _portable_path(parts, portable, taken)
+                    if member.isfile() and new_parts != parts:
+                        renamed["/".join(parts[1:])] = "/".join(new_parts[1:])
+                    parts = new_parts
                 target = destination.joinpath(*parts)
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
@@ -244,7 +260,29 @@ def _extract(archive: Path, destination: Path) -> datetime | None:
                     made_at = datetime.fromtimestamp(member.mtime, timezone.utc)
     except (tarfile.TarError, EOFError, OSError) as e:
         raise InventoryError(f"the file is not a valid snapshot or backup: {e}") from None
-    return made_at
+    return made_at, renamed
+
+
+def _portable_path(
+    parts: tuple[str, ...], portable: dict[tuple[str, ...], tuple[str, ...]], taken: dict[tuple[str, ...], set[str]]
+) -> tuple[str, ...]:
+    """The path to unpack `parts` to: each name made portable and unique in its
+    folder, ignoring case as Windows does ('a:b.pdf' and 'A_b.pdf' become
+    'a_b.pdf' and 'A_b-1.pdf'). `portable` remembers what each path of the
+    archive became, `taken` the (casefolded) names used in each folder."""
+    for i in range(1, len(parts) + 1):
+        if parts[:i] in portable:
+            continue
+        folder = portable[parts[: i - 1]] if i > 1 else ()
+        used = taken.setdefault(folder, set())
+        name = candidate = portable_filename(parts[i - 1]) if i > 1 else parts[0]
+        n = 1
+        while candidate.casefold() in used:
+            candidate = f"{PurePosixPath(name).stem}-{n}{PurePosixPath(name).suffix}"
+            n += 1
+        used.add(candidate.casefold())
+        portable[parts[:i]] = folder + (candidate,)
+    return portable[parts]
 
 
 def open_inventory(db_path: str | Path) -> Inventory:

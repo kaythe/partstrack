@@ -186,6 +186,31 @@ class SnapshotTest(unittest.TestCase):
         self.assertFalse((self.dir / "evil").exists())
         self.assertEqual([p.name for p in (self.dir / "copy").iterdir()], [])  # nothing left behind
 
+    def test_unportable_attachment_names_are_renamed_in_the_copy(self):
+        # Names a Linux server can store but Windows can't (or not side by side).
+        names = ["ds 10:30.pdf", 'a?b"c.pdf', "CON.pdf", "nul", "trailing. ", "back\\slash.png", "A_b.pdf", "a:b.pdf"]
+        contents = {}
+        for i, name in enumerate(names):
+            source = self.dir / "src" / str(i) / name
+            source.parent.mkdir(parents=True)
+            source.write_bytes(name.encode())
+            attachment_id = self.server.add_attachment(self.part_id, str(source))
+            # Store the file under its original name, as older versions did.
+            stored = self.server.get_attachment(attachment_id).path
+            stored.rename(stored.with_name(name))
+            self.server.move_stored_attachments({f"{self.part_id}/{stored.name}": f"{self.part_id}/{name}"})
+            contents[attachment_id] = name.encode()
+
+        copy = Inventory(unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/"), read_only=True)
+        self.addCleanup(copy.close)
+        files = [copy.get_attachment(i).path for i in contents]
+        for attachment_id, path in zip(contents, files):
+            self.assertEqual(path.read_bytes(), contents[attachment_id])
+            self.assertEqual(copy.get_attachment(attachment_id).original_name, path.read_text())
+            self.assertNotRegex(path.name, r'[<>:"\\|?*]|[ .]$|^(?i:con|nul)(\.|$)')
+        self.assertEqual(len({p.name.casefold() for p in files}), len(files))
+        self.assertEqual(copy.get_part(self.part_id).attachments[0].path.read_bytes(), b"%PDF datasheet")
+
     def test_empty_or_foreign_database_keeps_the_copy(self):
         db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
         for content in [b"", b"not a database at all"]:

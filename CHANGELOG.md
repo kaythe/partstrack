@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Downloading a copy of a server or opening a backup no longer fails with
+  "the archive contains something unexpected" when an attachment's file name
+  contains characters that Windows doesn't allow, such as `:`. Such files
+  (and device names like `CON`, or names that only differ in case) are
+  renamed in the copy; the attachments still show their original names.
+
 ## [1.1.0] - 2026-11-02
 
 ### Added
