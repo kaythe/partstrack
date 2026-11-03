@@ -21,7 +21,7 @@ import time
 import unittest
 from pathlib import Path
 
-from partstrack.store import MIGRATIONS, Inventory, InventoryError, NotFoundError, si_number
+from partstrack.store import MIGRATIONS, Inventory, InventoryError, NotFoundError, portable_filename, si_number
 
 
 class InventoryTest(unittest.TestCase):
@@ -115,6 +115,36 @@ class InventoryTest(unittest.TestCase):
         self.assertFalse(stored.exists())
         self.inv.delete_part(part_id)
         self.assertFalse((self.inv.attachments_dir / str(part_id)).exists())
+
+    def test_portable_filename(self):
+        cases = {
+            "ne555.pdf": "ne555.pdf",
+            "ds 10:30.pdf": "ds 10_30.pdf",
+            'a<b>c"d|e?f*g\\h\x01.png': "a_b_c_d_e_f_g_h_.png",
+            "trailing. .": "trailing",
+            "...": "_",
+            "CON": "_CON",
+            "nul.txt": "_nul.txt",
+            "Com1 .tar.gz": "_Com1 .tar.gz",
+            "console.pdf": "console.pdf",
+            "LPT10": "LPT10",
+            "Größe.pdf": "Größe.pdf",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(portable_filename(name), expected)
+
+    def test_attachments_are_stored_under_portable_names(self):
+        part_id = self.inv.add_part("ESP32")
+        ids = []
+        for name in ["A_b.pdf", "a:b.pdf", "CON.pdf"]:
+            src = self.dir / name
+            src.write_bytes(name.encode())
+            ids.append(self.inv.add_attachment(part_id, str(src)))
+        attachments = [self.inv.get_attachment(i) for i in ids]
+        self.assertEqual([a.original_name for a in attachments], ["A_b.pdf", "a:b.pdf", "CON.pdf"])
+        self.assertEqual([a.path.name for a in attachments], ["A_b.pdf", "a_b-1.pdf", "_CON.pdf"])
+        self.assertEqual([a.path.read_text() for a in attachments], ["A_b.pdf", "a:b.pdf", "CON.pdf"])
 
     def test_location_with_stock_cannot_be_deleted(self):
         part_id = self.inv.add_part("LED red")

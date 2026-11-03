@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- New attachments (added files, uploads and downloaded links) are stored
+  under file names that every system accepts: characters such as `:` become
+  `_`, device names like `CON` get a leading `_`, and a name that differs
+  from an existing one only in case gets a number. The attachment still shows
+  its original name.
+
 ### Fixed
 
 - Downloading a copy of a server or opening a backup no longer fails with

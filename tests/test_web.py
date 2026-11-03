@@ -70,6 +70,12 @@ class WebTest(unittest.TestCase):
         self.assertIn("Cabinet A/Drawer 1", page)
         self.assertIn("4.5-16V", page)
 
+        self.client.post(f"/parts/{part.id}/attachments", content_type="multipart/form-data",
+                         data={"files": [(io.BytesIO(b"%PDF-1.4"), "ds 10:30.pdf")]})
+        with self.inventory() as inv:
+            uploaded = next(a for a in inv.get_part(part.id).attachments if a.original_name == "ds 10:30.pdf")
+        self.assertEqual((uploaded.path.name, uploaded.path.read_bytes()), ("ds 10_30.pdf", b"%PDF-1.4"))
+
         svg = next(a for a in part.attachments if a.original_name == "pinout.svg")
         response = self.client.get(f"/attachments/{svg.id}")
         self.assertEqual(response.headers["Content-Security-Policy"], "sandbox")

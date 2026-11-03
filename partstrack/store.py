@@ -468,12 +468,16 @@ def portable_filename(name: str) -> str:
 
 
 def _unique_destination(directory: Path, name: str) -> Path:
-    dest = directory / name
-    n = 1
-    while dest.exists():
-        dest = directory / f"{Path(name).stem}-{n}{Path(name).suffix}"
+    """A path in `directory` for a file called `name`: made portable, so a copy
+    of the attachments can be unpacked on any system, and unique there even on
+    a system that ignores case ('a:b.pdf' next to 'A_b.pdf' -> 'a_b-1.pdf')."""
+    name = portable_filename(name)
+    used = {p.name.casefold() for p in directory.iterdir()} if directory.is_dir() else set()
+    candidate, n = name, 1
+    while candidate.casefold() in used:
+        candidate = f"{Path(name).stem}-{n}{Path(name).suffix}"
         n += 1
-    return dest
+    return directory / candidate
 
 
 def _parse_location(ref: str) -> tuple[bool, list[str]]:
@@ -1156,8 +1160,10 @@ class Inventory:
 
     # -- attachments ---------------------------------------------------------
 
-    def add_attachment(self, part_id: int, source: str, kind: str | None = None) -> int:
-        """Attach a URL or a local file (which is copied into the attachments directory)."""
+    def add_attachment(self, part_id: int, source: str, kind: str | None = None, name: str | None = None) -> int:
+        """Attach a URL or a local file (which is copied into the attachments
+        directory under a portable version of its name). `name` is the name to
+        show for a file, if not its own (e.g. an upload saved under another name)."""
         kind = kind or guess_attachment_kind(source)
         if kind not in ATTACHMENT_KINDS:
             raise InventoryError(f"attachment kind must be one of {', '.join(ATTACHMENT_KINDS)}")
@@ -1184,7 +1190,7 @@ class Inventory:
             shutil.copy2(src, dest)
             cur = self.conn.execute(
                 "INSERT INTO attachments (part_id, kind, path, original_name) VALUES (?, ?, ?, ?)",
-                (part_id, kind, dest.relative_to(self.attachments_dir).as_posix(), src.name),
+                (part_id, kind, dest.relative_to(self.attachments_dir).as_posix(), name or src.name),
             )
             self._touch(part_id)
         return cur.lastrowid
@@ -1235,7 +1241,7 @@ class Inventory:
         self.attachments_dir.mkdir(parents=True, exist_ok=True)
         # Download next to the final location, so moving it there is cheap and atomic.
         with tempfile.TemporaryDirectory(dir=self.attachments_dir) as tmp:
-            downloaded = Path(tmp) / name
+            downloaded = Path(tmp) / portable_filename(name)
             _download(attachment.url, downloaded, allow_local=self.allow_local_downloads)
             with self.transaction():
                 dest_dir = self.attachments_dir / str(attachment.part_id)
