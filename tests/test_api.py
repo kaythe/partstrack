@@ -99,6 +99,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(len(self.get("/api/history?limit=1")), 1)
         self.assertEqual([c["location"] for c in self.get("/api/history?location=/Bench&limit=0")], ["Bench"])
         self.assertIn("whole number", self.get("/api/history?limit=x", 400)["error"])
+        self.assertIn("whole number", self.get("/api/history?limit=%C2%B2", 400)["error"])
 
     def test_snapshot(self):
         temp = Path(self.tmp.name) / "temp"

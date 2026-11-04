@@ -137,6 +137,16 @@ class WebTest(unittest.TestCase):
         page = self.client.get("/parts/bulk?shown=1&filter_tag=odd").get_data(as_text=True)
         self.assertIn("R59", page)  # all that match, not only the first page
 
+    def test_numbers_that_are_not_ascii(self):
+        self.add_part()
+        for url in ["/?page=%C2%B2", "/parts/bulk?part=%C2%B2", "/labels?part=%C2%B2",
+                    "/parts/new?copy=%C2%B2", "/history?part=%C2%B2"]:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+        self.assertIn(">NE555</a>", self.client.get("/?page=%C2%B2").get_data(as_text=True))
+        response = self.client.post("/parts/bulk", data={"part": "²", "op": "add_tags", "tags": "x"})
+        self.assertEqual(response.status_code, 302)
+
     def test_stock_actions(self):
         self.add_part()
         with self.inventory() as inv:

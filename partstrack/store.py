@@ -280,6 +280,17 @@ class Part:
 
 
 @dataclass
+class PartsPage:
+    """One page of a list of parts (see Inventory.parts_page)."""
+
+    parts: list[Part]
+    total: int  # matching parts on all pages
+    page: int  # 1-based, within 1..pages
+    pages: int  # at least 1, also when nothing matches
+    first: int  # 1-based position of parts[0] in the whole list
+
+
+@dataclass
 class StockChange:
     """One entry of the stock history: a change of a part's quantity at one location."""
 
@@ -498,6 +509,14 @@ def nocase(text: str) -> str:
     return text.translate(_ASCII_LOWER)
 
 
+def whole_number(text: str) -> int | None:
+    """`text` as a non-negative whole number if it is one written in ASCII digits,
+    else None. Use it instead of str.isdigit(), which also accepts characters
+    like '²' that int() refuses."""
+    text = text.strip()
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
 def _path_key(path: str) -> list[str]:
     """Sort key that keeps each location directly before its children."""
     return [s.casefold() for s in path.split(LOCATION_SEPARATOR)]
@@ -714,9 +733,9 @@ class Inventory:
             part_id = self.part_id_by_name(ref)
             if part_id is not None:
                 return part_id
-        number = ref.removeprefix("#")
-        if number.isdigit():
-            row = self.conn.execute("SELECT id FROM parts WHERE id = ?", (int(number),)).fetchone()
+        number = whole_number(ref.removeprefix("#"))
+        if number is not None:
+            row = self.conn.execute("SELECT id FROM parts WHERE id = ?", (number,)).fetchone()
             if row:
                 return row["id"]
         raise NotFoundError(f"no part '{ref}'")
@@ -824,6 +843,33 @@ class Inventory:
             sql += " ORDER BY p.name, p.id LIMIT ? OFFSET ?"
             params += [max(limit, 0), max(offset, 0)]
         return self._load_parts(sql, params)
+
+    def parts_page(
+        self,
+        query: str = "",
+        *,
+        tag: str | None = None,
+        location: str | None = None,
+        category: str | None = None,
+        low: bool = False,
+        page: int = 1,
+        per_page: int | None = None,
+    ) -> PartsPage:
+        """One page of what list_parts() returns for the same filters, with
+        `per_page` parts (None: all on one page). A page past the end gives the
+        last page. The count and the parts come from the same state of the
+        database, so the page matches the total even while others write."""
+        filters = dict(tag=tag, location=location, category=category, low=low)
+        with self._consistent_reads():
+            total = self.count_parts(query, **filters)
+            if per_page is None:
+                return PartsPage(self.list_parts(query, **filters), total, 1, 1, 1)
+            per_page = max(per_page, 1)
+            pages = max(1, -(-total // per_page))
+            page = min(max(page, 1), pages)
+            offset = (page - 1) * per_page
+            found = self.list_parts(query, **filters, limit=per_page, offset=offset)
+            return PartsPage(found, total, page, pages, offset + 1)
 
     def count_parts(
         self,

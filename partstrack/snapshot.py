@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .labels import normalize_base_url
-from .store import USER_AGENT, Inventory, InventoryError, portable_filename
+from .store import USER_AGENT, Inventory, InventoryError, portable_filename, whole_number
 
 DATABASE = "parts.db"
 ATTACHMENTS = "attachments"
@@ -121,7 +121,7 @@ def download_snapshot(base_url: str, path: Path, progress: Callable[[int], None]
                     progress(received)
             # http.client stops at a closed connection without complaint when the
             # length was announced; a chunked answer cut short raises IncompleteRead.
-            if expected is not None and expected.isdigit() and received != int(expected):
+            if expected is not None and (size := whole_number(expected)) is not None and received != size:
                 raise InventoryError(f"the download from {url} was cut off ({received} of {expected} bytes)")
     except http.client.IncompleteRead:
         raise InventoryError(f"the download from {url} was cut off") from None

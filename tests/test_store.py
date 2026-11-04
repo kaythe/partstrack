@@ -21,7 +21,9 @@ import time
 import unittest
 from pathlib import Path
 
-from partstrack.store import MIGRATIONS, Inventory, InventoryError, NotFoundError, portable_filename, si_number
+from partstrack.store import (
+    MIGRATIONS, Inventory, InventoryError, NotFoundError, portable_filename, si_number, whole_number
+)
 
 
 class InventoryTest(unittest.TestCase):
@@ -112,6 +114,54 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(names(self.inv.list_parts(tag="x", limit=2, offset=1)), ["B", "c"])
         self.assertEqual((self.inv.count_parts(), self.inv.count_parts(tag="x")), (5, 3))
         self.assertEqual(self.inv.count_parts("nothing"), 0)
+
+    def test_parts_page(self):
+        for i in range(5):
+            self.inv.add_part(f"P{i}")
+        names = lambda page: [p.name for p in page.parts]
+        page = self.inv.parts_page(page=2, per_page=2)
+        self.assertEqual((names(page), page.total, page.page, page.pages, page.first), (["P2", "P3"], 5, 2, 3, 3))
+        page = self.inv.parts_page(page=9, per_page=2)  # past the end: the last page
+        self.assertEqual((names(page), page.page, page.first), (["P4"], 3, 5))
+        page = self.inv.parts_page(page=0, per_page=2)
+        self.assertEqual((names(page), page.page), (["P0", "P1"], 1))
+        page = self.inv.parts_page(page=3)  # all on one page
+        self.assertEqual((len(page.parts), page.page, page.pages), (5, 1, 1))
+        page = self.inv.parts_page("nothing", per_page=2)
+        self.assertEqual((page.parts, page.total, page.page, page.pages), ([], 0, 1, 1))
+
+    def test_parts_page_reads_count_and_parts_together(self):
+        for i in range(3):
+            self.inv.add_part(f"P{i}")
+        count_parts = self.inv.count_parts
+        writer = None
+
+        def count_then_delete(*args, **kwargs):
+            # Another connection deletes a part right after the count was read.
+            nonlocal writer
+            total = count_parts(*args, **kwargs)
+
+            def delete():
+                with Inventory(self.dir / "parts.db") as other:
+                    other.delete_part(other.find_part("P0"))
+
+            writer = threading.Thread(target=delete)
+            writer.start()
+            time.sleep(0.2)  # let it reach the database
+            return total
+
+        self.inv.count_parts = count_then_delete
+        page = self.inv.parts_page(page=2, per_page=2)
+        writer.join()
+        self.assertEqual(([p.name for p in page.parts], page.total), (["P2"], 3))
+        del self.inv.count_parts
+        self.assertEqual(self.inv.count_parts(), 2)  # the delete went through afterwards
+
+    def test_whole_number(self):
+        self.assertEqual([whole_number(t) for t in ["12", " 7 ", "0"]], [12, 7, 0])
+        self.assertEqual([whole_number(t) for t in ["", "-1", "1.5", "x", "²", "١٢", "１"]], [None] * 7)
+        with self.assertRaises(NotFoundError):
+            self.inv.find_part("#²")
 
     def test_file_and_url_attachments(self):
         part_id = self.inv.add_part("ESP32")

@@ -85,9 +85,11 @@ from ..store import (
     Location,
     NotFoundError,
     Part,
+    PartsPage,
     downloadable_name,
     is_url,
     portable_filename,
+    whole_number,
 )
 
 bp = Blueprint("ui", __name__)
@@ -331,37 +333,28 @@ def parts():
     per_page = chosen if chosen in PAGE_SIZES else request.cookies.get(PAGE_SIZE_COOKIE)
     if per_page not in PAGE_SIZES:
         per_page = DEFAULT_PAGE_SIZE
-    page_arg = request.args.get("page", "")
-    page = int(page_arg) if page_arg.isdigit() else 1
-    selection = dict(
-        tag=filters["tag"] or None,
-        location=filters["location"] or None,
-        category=filters["category"] or None,
-        low=bool(filters["low"]),
-    )
     try:
-        total = inv.count_parts(filters["q"], **selection)
-        if per_page == "all":
-            pages = page = 1
-            found = inv.list_parts(filters["q"], **selection)
-        else:
-            size = int(per_page)
-            pages = max(1, -(-total // size))
-            page = min(max(page, 1), pages)
-            found = inv.list_parts(filters["q"], **selection, limit=size, offset=(page - 1) * size)
+        found = inv.parts_page(
+            filters["q"],
+            tag=filters["tag"] or None,
+            location=filters["location"] or None,
+            category=filters["category"] or None,
+            low=bool(filters["low"]),
+            page=whole_number(request.args.get("page", "")) or 1,
+            per_page=None if per_page == "all" else int(per_page),
+        )
     except InventoryError as e:
         flash(str(e), "error")
-        found, total, page, pages = [], 0, 1, 1
-    first = (page - 1) * int(per_page) + 1 if per_page != "all" else 1
+        found = PartsPage([], 0, 1, 1, 1)
     response = make_response(render_template(
         "parts.html",
-        parts=found,
+        parts=found.parts,
         filters=filters,
         active_filters={name: value for name, value in filters.items() if value},
-        total=total,
-        page=page,
-        pages=pages,
-        first=first,
+        total=found.total,
+        page=found.page,
+        pages=found.pages,
+        first=found.first,
         per_page=per_page,
         page_sizes=PAGE_SIZES,
         tags=inv.list_tags(),
@@ -377,8 +370,8 @@ def parts():
 def new_part():
     inv = inventory()
     # ?copy=<id> fills the form from another part (see the Duplicate button).
-    copy_id = request.args.get("copy", "")
-    copy_of = inv.get_part(int(copy_id)) if copy_id.isdigit() else None
+    copy_id = whole_number(request.args.get("copy", ""))
+    copy_of = inv.get_part(copy_id) if copy_id is not None else None
     if request.method == "GET":
         return _render_part_form(None, _form_values(copy_of), copy_of)
     try:
@@ -558,7 +551,7 @@ def bulk():
 @action
 def bulk_change():
     inv = inventory()
-    parts = inv.get_parts(int(i) for i in request.form.getlist("part") if i.isdigit())
+    parts = inv.get_parts(_part_ids(request.form))
     if not parts:
         raise InventoryError("no parts selected")
     count = f"{len(parts)} part{'' if len(parts) == 1 else 's'}"
@@ -610,7 +603,8 @@ HISTORY_LIMIT = 500  # newest changes shown on the history page
 def history():
     inv = inventory()
     filters = {name: request.args.get(name, "").strip() for name in ("part", "location")}
-    part = inv.get_part(int(filters["part"])) if filters["part"].isdigit() else None
+    part_id = whole_number(filters["part"])
+    part = inv.get_part(part_id) if part_id is not None else None
     try:
         changes = inv.stock_history(
             part.id if part else None, location=filters["location"] or None, limit=HISTORY_LIMIT
@@ -712,7 +706,12 @@ def _selected_parts(inv: Inventory) -> list[Part]:
         filters = {name: request.args.get("filter_" + name, "").strip() for name in PART_FILTERS}
         return inv.list_parts(filters["q"], tag=filters["tag"] or None, location=filters["location"] or None,
                               category=filters["category"] or None, low=bool(filters["low"]))
-    return inv.get_parts(int(i) for i in request.args.getlist("part") if i.isdigit())
+    return inv.get_parts(_part_ids(request.args))
+
+
+def _part_ids(values) -> list[int]:
+    """The part ids in a form's or query's 'part' fields, skipping anything that isn't one."""
+    return [n for n in map(whole_number, values.getlist("part")) if n is not None]
 
 
 def _label_options_cookie() -> dict[str, str]:
