@@ -18,6 +18,21 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
 {% extends "base.html" %}
 {% block title %}Parts{% endblock %}
 {% block content %}
+{% macro pager() -%}
+<nav class="pager" aria-label="Pages">
+  <span class="muted">{% if per_page == "all" or pages == 1 %}{{ total }} part{{ "" if total == 1 else "s" }}{% else %}Parts {{ first }}–{{ first + parts|length - 1 }} of {{ total }}{% endif %}</span>
+  {% if pages > 1 %}
+  <span class="pages">
+    {% if page > 1 %}<a href="{{ url_for('ui.parts', page=page - 1, **active_filters) }}" rel="prev">← Previous</a>{% else %}<span class="muted">← Previous</span>{% endif %}
+    <span>Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}<a href="{{ url_for('ui.parts', page=page + 1, **active_filters) }}" rel="next">Next →</a>{% else %}<span class="muted">Next →</span>{% endif %}
+  </span>
+  {% endif %}
+  <span class="page-sizes">Show
+    {% for size in page_sizes %}{% if size == per_page %}<strong aria-current="true">{{ size|capitalize }}</strong>{% else %}<a href="{{ url_for('ui.parts', per_page=size, **active_filters) }}">{{ size|capitalize }}</a>{% endif %}{{ " " if not loop.last }}{% endfor %}
+  </span>
+</nav>
+{%- endmacro %}
 <div class="page-head">
   <h1>Parts</h1>
   <a class="button primary" href="{{ url_for('ui.new_part') }}">Add part</a>
@@ -45,14 +60,15 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
 
 {% if parts %}
 {# The checkboxes below belong to this form; its buttons change the selected parts
-   (or all shown, by sending the filters) or print labels for them. -#}
+   (or all that match, on every page, by sending the filters) or print labels for them. -#}
 <form id="selection" class="inline labels-selection" method="get" action="{{ url_for('ui.bulk') }}">
-  {% for name, value in filters.items() if value %}<input type="hidden" name="filter_{{ name }}" value="{{ value }}">{% endfor %}
+  {% for name, value in active_filters.items() %}<input type="hidden" name="filter_{{ name }}" value="{{ value }}">{% endfor %}
   <button>Change selected…</button>
-  <button name="shown" value="1">Change all {{ parts|length }} shown…</button>
+  <button name="shown" value="1">Change all {{ total }} matching…</button>
   <button formaction="{{ url_for('ui.labels') }}">Labels for selected</button>
-  <button name="shown" value="1" formaction="{{ url_for('ui.labels') }}">Labels for all {{ parts|length }} shown</button>
+  <button name="shown" value="1" formaction="{{ url_for('ui.labels') }}">Labels for all {{ total }} matching</button>
 </form>
+{{ pager() }}
 <div class="table-wrap">
 <table class="list">
   <thead>
@@ -80,7 +96,7 @@ Copyright (C) 2026 Kayla Theil (accounts@kaylatheil.de)
   </tbody>
 </table>
 </div>
-<p class="muted">{{ parts|length }} part{{ "" if parts|length == 1 else "s" }}</p>
+{{ pager() }}
 {% else %}
 <p class="empty">No parts found.</p>
 {% endif %}

@@ -33,7 +33,7 @@ from werkzeug.exceptions import HTTPException
 
 from .. import __version__
 from ..snapshot import write_snapshot
-from ..store import Attachment, InventoryError, Location, NotFoundError, Part, StockChange
+from ..store import Attachment, InventoryError, Location, NotFoundError, Part, StockChange, whole_number
 from .app import inventory
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -141,9 +141,10 @@ def _number(name: str) -> int | None:
     text = request.args.get(name, "").strip()
     if not text:
         return None
-    if not text.isdigit():
+    number = whole_number(text)
+    if number is None:
         raise InventoryError(f"'{name}' must be a whole number, got '{text}'")
-    return int(text)
+    return number
 
 
 # -- conversion to JSON -------------------------------------------------------

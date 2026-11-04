@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The parts list in the web interface is split into pages, with links to the
+  previous and next page above and below the table. *Show 25 / 50 / 100 / All*
+  sets how many parts a page shows (50 by default), and the browser remembers
+  the choice. Only the shown page is loaded, so long inventories open quickly.
+- In the web interface, *Change all shown* and *Labels for all shown* are now
+  called *Change all matching* and *Labels for all matching*. They still act on
+  every part the search and filters find, on all pages.
+
+### Fixed
+
+- Numbers written with characters other than the digits 0–9, such as `²`, no
+  longer crash the web interface (error 500) or the CLI. In the web interface
+  they are ignored, as other text is: in a part, page or copy field of a URL
+  or form. The API answers them with "must be a whole number", and
+  `partstrack show '#²'` reports that there is no such part.
+
 ## [1.1.1] - 2026-11-03
 
 ### Changed
