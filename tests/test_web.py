@@ -100,6 +100,43 @@ class WebTest(unittest.TestCase):
         self.assertNotIn("<b>evil</b>", page)
         self.assertIn("No parts found", self.client.get("/?q=nothing").get_data(as_text=True))
 
+    def test_parts_list_pages(self):
+        with self.inventory() as inv:
+            for i in range(60):
+                part_id = inv.add_part(f"R{i:02}")
+                if i % 2:
+                    inv.add_tags(part_id, ["odd"])
+        page = self.client.get("/").get_data(as_text=True)  # 50 per page unless chosen
+        self.assertIn("Parts 1–50 of 60", page)
+        self.assertIn(">R49</a>", page)
+        self.assertNotIn(">R50</a>", page)
+        self.assertIn("Page 1 of 2", page)
+        self.assertIn("Change all 60 matching", page)
+
+        page = self.client.get("/?page=2").get_data(as_text=True)
+        self.assertIn("Parts 51–60 of 60", page)
+        self.assertIn(">R59</a>", page)
+        self.assertNotIn(">R49</a>", page)
+        self.assertEqual(page, self.client.get("/?page=9").get_data(as_text=True))  # past the end: last page
+
+        response = self.client.get("/?per_page=25&tag=odd")
+        self.assertIn("per_page=25", response.headers["Set-Cookie"])
+        page = response.get_data(as_text=True)
+        self.assertIn("Parts 1–25 of 30", page)
+        self.assertIn('href="/?page=2&amp;tag=odd"', page)
+        self.assertIn("Labels for all 30 matching", page)
+        self.assertIn("Page 2 of 3", self.client.get("/?page=2").get_data(as_text=True))  # remembered
+
+        self.client.get("/?per_page=all")
+        page = self.client.get("/?page=2").get_data(as_text=True)
+        self.assertIn(">R00</a>", page)
+        self.assertIn(">R59</a>", page)
+        self.assertNotIn("Page 1", page)
+
+        self.client.get("/?per_page=50")
+        page = self.client.get("/parts/bulk?shown=1&filter_tag=odd").get_data(as_text=True)
+        self.assertIn("R59", page)  # all that match, not only the first page
+
     def test_stock_actions(self):
         self.add_part()
         with self.inventory() as inv:

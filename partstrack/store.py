@@ -801,6 +801,8 @@ class Inventory:
         location: str | None = None,
         category: str | None = None,
         low: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Part]:
         """Return matching parts, sorted by name.
 
@@ -811,8 +813,38 @@ class Inventory:
         '<', '<=', '>', '>=' (compare numbers with SI prefixes, see si_number).
         Quotes group words, e.g. '"forward voltage"<1V'. `location` also matches parts
         stored in its sublocations. `low` keeps only parts whose total stock
-        is below their minimum quantity.
+        is below their minimum quantity. `limit` and `offset` return one page of
+        the sorted list; count_parts() tells how many there are in all.
         """
+        where, params = self._part_conditions(query, tag, location, category, low)
+        sql = "SELECT p.id FROM parts p"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        if limit is not None:
+            sql += " ORDER BY p.name, p.id LIMIT ? OFFSET ?"
+            params += [max(limit, 0), max(offset, 0)]
+        return self._load_parts(sql, params)
+
+    def count_parts(
+        self,
+        query: str = "",
+        *,
+        tag: str | None = None,
+        location: str | None = None,
+        category: str | None = None,
+        low: bool = False,
+    ) -> int:
+        """The number of parts list_parts() returns for the same filters."""
+        where, params = self._part_conditions(query, tag, location, category, low)
+        sql = "SELECT COUNT(*) FROM parts p"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        return self.conn.execute(sql, params).fetchone()[0]
+
+    def _part_conditions(
+        self, query: str, tag: str | None, location: str | None, category: str | None, low: bool
+    ) -> tuple[list[str], list]:
+        """SQL conditions on parts `p` and their parameters for the filters of list_parts."""
         where, params = [], []
         for word in _search_words(query):
             if match := _ATTRIBUTE_FILTER.fullmatch(word):
@@ -851,10 +883,7 @@ class Inventory:
                 "p.min_quantity IS NOT NULL AND"
                 " COALESCE((SELECT SUM(s.quantity) FROM stock s WHERE s.part_id = p.id), 0) < p.min_quantity"
             )
-        sql = "SELECT p.id FROM parts p"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        return self._load_parts(sql, params)
+        return where, params
 
     @staticmethod
     def _attribute_filter(key: str, operator: str, value: str) -> tuple[str, list]:

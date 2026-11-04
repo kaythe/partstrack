@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The parts list in the web interface is split into pages, with links to the
+  previous and next page above and below the table. *Show 25 / 50 / 100 / All*
+  sets how many parts a page shows (50 by default), and the browser remembers
+  the choice. Only the shown page is loaded, so long inventories open quickly.
+- In the web interface, *Change all shown* and *Labels for all shown* are now
+  called *Change all matching* and *Labels for all matching*. They still act on
+  every part the search and filters find, on all pages.
+
 ## [1.1.1] - 2026-11-03
 
 ### Changed

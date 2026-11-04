@@ -317,29 +317,60 @@ def _render_part_form(part: Part | None, values: dict[str, str], copy_of: Part |
 # -- parts --------------------------------------------------------------------
 
 
+PAGE_SIZES = ("25", "50", "100", "all")
+DEFAULT_PAGE_SIZE = "50"
+PAGE_SIZE_COOKIE = "per_page"
+
+
 @bp.get("/")
 def parts():
     inv = inventory()
-    filters = {name: request.args.get(name, "").strip() for name in ("q", "tag", "location", "category", "low")}
+    filters = {name: request.args.get(name, "").strip() for name in PART_FILTERS}
+    # Choosing a page size only stores a preference in a cookie, like the theme; no data changes.
+    chosen = request.args.get("per_page")
+    per_page = chosen if chosen in PAGE_SIZES else request.cookies.get(PAGE_SIZE_COOKIE)
+    if per_page not in PAGE_SIZES:
+        per_page = DEFAULT_PAGE_SIZE
+    page_arg = request.args.get("page", "")
+    page = int(page_arg) if page_arg.isdigit() else 1
+    selection = dict(
+        tag=filters["tag"] or None,
+        location=filters["location"] or None,
+        category=filters["category"] or None,
+        low=bool(filters["low"]),
+    )
     try:
-        found = inv.list_parts(
-            filters["q"],
-            tag=filters["tag"] or None,
-            location=filters["location"] or None,
-            category=filters["category"] or None,
-            low=bool(filters["low"]),
-        )
+        total = inv.count_parts(filters["q"], **selection)
+        if per_page == "all":
+            pages = page = 1
+            found = inv.list_parts(filters["q"], **selection)
+        else:
+            size = int(per_page)
+            pages = max(1, -(-total // size))
+            page = min(max(page, 1), pages)
+            found = inv.list_parts(filters["q"], **selection, limit=size, offset=(page - 1) * size)
     except InventoryError as e:
         flash(str(e), "error")
-        found = []
-    return render_template(
+        found, total, page, pages = [], 0, 1, 1
+    first = (page - 1) * int(per_page) + 1 if per_page != "all" else 1
+    response = make_response(render_template(
         "parts.html",
         parts=found,
         filters=filters,
+        active_filters={name: value for name, value in filters.items() if value},
+        total=total,
+        page=page,
+        pages=pages,
+        first=first,
+        per_page=per_page,
+        page_sizes=PAGE_SIZES,
         tags=inv.list_tags(),
         locations=inv.list_locations(),
         categories=inv.list_categories(),
-    )
+    ))
+    if chosen in PAGE_SIZES:
+        response.set_cookie(PAGE_SIZE_COOKIE, chosen, max_age=365 * 24 * 3600, samesite="Lax")
+    return response
 
 
 @bp.route("/parts/new", methods=["GET", "POST"])

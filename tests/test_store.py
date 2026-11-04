@@ -99,6 +99,20 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(names(self.inv.list_parts(location="drawer a1")), ["10k resistor"])
         self.assertEqual(names(self.inv.list_parts(category="mcu")), ["ATmega328P"])
 
+    def test_pages_of_parts(self):
+        for name in ["c", "B", "a", "e", "D"]:
+            part_id = self.inv.add_part(name)
+            if name in "aBc":
+                self.inv.add_tags(part_id, ["x"])
+        names = lambda parts: [p.name for p in parts]
+        self.assertEqual(names(self.inv.list_parts(limit=2)), ["a", "B"])
+        self.assertEqual(names(self.inv.list_parts(limit=2, offset=2)), ["c", "D"])
+        self.assertEqual(names(self.inv.list_parts(limit=2, offset=4)), ["e"])
+        self.assertEqual(self.inv.list_parts(limit=2, offset=6), [])
+        self.assertEqual(names(self.inv.list_parts(tag="x", limit=2, offset=1)), ["B", "c"])
+        self.assertEqual((self.inv.count_parts(), self.inv.count_parts(tag="x")), (5, 3))
+        self.assertEqual(self.inv.count_parts("nothing"), 0)
+
     def test_file_and_url_attachments(self):
         part_id = self.inv.add_part("ESP32")
         src = self.dir / "esp32.pdf"
