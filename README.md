@@ -31,6 +31,24 @@ The [command-line app](#examples):
 
 <img src="docs/screenshots/cli.png" alt="Searching, taking stock and showing a part on the command line" width="730">
 
+## Contents
+
+- [Install / run](#install--run)
+- [Examples](#examples)
+- [Searching by attribute](#searching-by-attribute)
+- [Low stock and history](#low-stock-and-history)
+- [Locations](#locations)
+- [CSV import and export](#csv-import-and-export)
+- [Web interface](#web-interface)
+- [JSON API](#json-api)
+- [Labels with QR codes](#labels-with-qr-codes)
+- [Desktop app](#desktop-app)
+  - [Read-only copies of a server's inventory](#read-only-copies-of-a-servers-inventory)
+- [Backups](#backups)
+- [Layout](#layout)
+- [Tests](#tests)
+- [License](#license)
+
 ## Install / run
 
 ```sh
