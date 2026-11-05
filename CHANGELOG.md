@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaves out symbolic links, as the server's snapshots do, and stores
   hard-linked files as ordinary files. Backups made earlier that contain
   links still have to be restored with `tar`.
+- If the database the desktop app opened last no longer exists (for example
+  because it is on a drive that is not connected), the app asks whether to
+  create a new, empty one there or to open the default database, instead of
+  silently starting with an empty inventory.
 
 ## [1.2.0] - 2026-11-05
 
