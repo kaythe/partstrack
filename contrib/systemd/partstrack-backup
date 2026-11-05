@@ -24,6 +24,12 @@ db=${PARTSTRACK_DB:-$HOME/.local/share/partstrack/parts.db}
 keep=${KEEP:-5}
 data=$(dirname "$db")
 
+if [[ ! $keep =~ ^[0-9]+$ ]] || (( 10#$keep < 1 )); then
+    echo "KEEP must be a whole number of at least 1, not '$keep'" >&2
+    exit 1
+fi
+keep=$(( 10#$keep ))
+
 [ -f "$db" ] || { echo "no database at $db" >&2; exit 1; }
 mkdir -p "$dest"
 
@@ -41,15 +47,22 @@ src.close()
 dst.close()
 PY
 
-stamp=$(date +%Y-%m-%d_%H%M%S)
 files=(-C "$work" parts.db)
 [ -d "$data/attachments" ] && files+=(-C "$data" attachments)
 tar -czf "$work/backup.tar.gz" "${files[@]}"
+# A second run within the same second waits instead of overwriting the first.
+stamp=$(date +%Y-%m-%d_%H%M%S)
+while [ -e "$dest/partstrack-$stamp.tar.gz" ]; do
+    sleep 1
+    stamp=$(date +%Y-%m-%d_%H%M%S)
+done
 # Move into place only when complete, so a failed run never counts as a backup.
 mv "$work/backup.tar.gz" "$dest/partstrack-$stamp.tar.gz"
 
-# The timestamps sort chronologically, and so does the glob.
-backups=("$dest"/partstrack-*.tar.gz)
+# Only files named like the backups count, so others (e.g. partstrack-old.tar.gz)
+# are never deleted. The timestamps sort chronologically, and so does the glob.
+d='[0-9]'
+backups=("$dest"/partstrack-$d$d$d$d-$d$d-$d${d}_$d$d$d$d$d$d.tar.gz)
 excess=$(( ${#backups[@]} - keep ))
 if (( excess > 0 )); then
     rm -- "${backups[@]:0:excess}"

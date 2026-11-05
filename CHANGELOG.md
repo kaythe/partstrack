@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ones are refused with a message. Ids too large to exist are reported as not
   found. Whole numbers in an imported CSV are no longer rounded on the way
   through a floating-point number.
+- The backup script `contrib/systemd/partstrack-backup` no longer deletes
+  every backup, including the new one, when `KEEP` is 0. `KEEP` must now be a
+  whole number of at least 1. Files in the destination folder that are not
+  named like the backups (e.g. `partstrack-old.tar.gz`) are no longer counted
+  or deleted, and a second run within the same second no longer overwrites
+  the first one's backup.
 
 ## [1.2.0] - 2026-11-05
 
