@@ -125,6 +125,12 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 405)
         self.assertEqual(self.client.get("/nope").content_type, "text/html; charset=utf-8")  # not under /api
 
+    def test_numbers_beyond_the_database_range(self):
+        huge = "9" * 30
+        self.get(f"/api/parts/{huge}", 404)
+        self.get(f"/api/history?part={huge}", 404)
+        self.assertEqual(len(self.get(f"/api/history?limit={huge}", 200)), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

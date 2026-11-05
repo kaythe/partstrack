@@ -53,6 +53,9 @@ DOWNLOAD_TIMEOUT = 30  # seconds without data before a download is given up
 MAX_DOWNLOAD_SIZE = 200 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 (compatible; partstrack)"
 LOCATION_SEPARATOR = "/"
+# Largest quantity per location and largest minimum quantity. SQLite integers
+# have 64 bits; staying far below that means sums of quantities can't overflow.
+MAX_QUANTITY = 10**12
 NEW_PART_NOTE = "new part"  # stock history note for the initial stock of a part being added
 
 # Prefix for queries that need the full path of each location.
@@ -569,6 +572,17 @@ def whole_number(text: str) -> int | None:
     return int(text) if text.isascii() and text.isdigit() else None
 
 
+def _fits_sqlite(value: object) -> bool:
+    """False for ints that SQLite can't store (it has 64 bits): sqlite3 raises
+    OverflowError for them, and they can't be the id of anything."""
+    return not isinstance(value, int) or -(2**63) <= value < 2**63
+
+
+def _check_quantity(quantity: int, what: str = "quantity") -> None:
+    if quantity > MAX_QUANTITY:
+        raise InventoryError(f"{what} must not be larger than {MAX_QUANTITY}")
+
+
 def _path_key(path: str) -> list[str]:
     """Sort key that keeps each location directly before its children."""
     return [s.casefold() for s in path.split(LOCATION_SEPARATOR)]
@@ -755,6 +769,8 @@ class Inventory:
         """Set the total below which a part counts as low on stock; None removes the threshold."""
         if min_quantity is not None and min_quantity < 0:
             raise InventoryError("minimum quantity must not be negative")
+        if min_quantity is not None:
+            _check_quantity(min_quantity, "minimum quantity")
         with self.transaction():
             self._require_part(part_id)
             self.conn.execute(
@@ -786,14 +802,14 @@ class Inventory:
             if part_id is not None:
                 return part_id
         number = whole_number(ref.removeprefix("#"))
-        if number is not None:
+        if number is not None and _fits_sqlite(number):
             row = self.conn.execute("SELECT id FROM parts WHERE id = ?", (number,)).fetchone()
             if row:
                 return row["id"]
         raise NotFoundError(f"no part '{ref}'")
 
     def get_part(self, part_id: int) -> Part:
-        parts = self._load_parts("SELECT ?", [part_id])
+        parts = self._load_parts("SELECT ?", [part_id]) if _fits_sqlite(part_id) else []
         if not parts:
             raise NotFoundError(f"no part with id {part_id}")
         return parts[0]
@@ -803,7 +819,8 @@ class Inventory:
         wanted = list(dict.fromkeys(part_ids))
         if not wanted:
             return []
-        parts = self._load_parts(f"SELECT id FROM parts WHERE id IN ({', '.join('?' * len(wanted))})", wanted)
+        valid = [i for i in wanted if _fits_sqlite(i)]  # others can't exist
+        parts = self._load_parts(f"SELECT id FROM parts WHERE id IN ({', '.join('?' * len(valid))})", valid)
         if len(parts) < len(wanted):
             missing = sorted(set(wanted) - {p.id for p in parts})
             raise NotFoundError(f"no part with id {missing[0]}")
@@ -1267,7 +1284,7 @@ class Inventory:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY l.id DESC"
-        if limit is not None:
+        if limit is not None and _fits_sqlite(limit):
             sql += " LIMIT ?"
             params.append(limit)
         return [
@@ -1323,7 +1340,9 @@ class Inventory:
         return cur.lastrowid
 
     def remove_attachment(self, attachment_id: int) -> None:
-        row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        row = None
+        if _fits_sqlite(attachment_id):
+            row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"no attachment with id {attachment_id}")
         with self.transaction():
@@ -1403,7 +1422,9 @@ class Inventory:
         return results
 
     def get_attachment(self, attachment_id: int) -> Attachment:
-        row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        row = None
+        if _fits_sqlite(attachment_id):
+            row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"no attachment with id {attachment_id}")
         return self._attachment_from_row(row)
@@ -1435,7 +1456,9 @@ class Inventory:
         return name
 
     def _require_part(self, part_id: int) -> None:
-        if not self.conn.execute("SELECT 1 FROM parts WHERE id = ?", (part_id,)).fetchone():
+        if not _fits_sqlite(part_id) or not self.conn.execute(
+            "SELECT 1 FROM parts WHERE id = ?", (part_id,)
+        ).fetchone():
             raise NotFoundError(f"no part with id {part_id}")
 
     def _touch(self, part_id: int) -> None:
@@ -1500,6 +1523,7 @@ class Inventory:
     def _write_stock(self, part_id: int, location_id: int, quantity: int, *, action: str, note: str) -> None:
         """Store a new quantity and record the change in the stock history.
         Call it inside a transaction, so the change and its record are saved together."""
+        _check_quantity(quantity)
         delta = quantity - self._read_stock(part_id, location_id)
         if delta:
             self.conn.execute(

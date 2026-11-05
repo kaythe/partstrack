@@ -22,7 +22,8 @@ import unittest
 from pathlib import Path
 
 from partstrack.store import (
-    MIGRATIONS, Inventory, InventoryError, NotFoundError, portable_filename, si_number, whole_number
+    MAX_QUANTITY, MIGRATIONS, Inventory, InventoryError, NotFoundError, portable_filename, si_number,
+    whole_number,
 )
 
 
@@ -517,6 +518,33 @@ class InventoryTest(unittest.TestCase):
         )
         self.inv.delete_part(part_id)
         self.assertEqual(self.inv.stock_history(), [])
+
+    def test_numbers_beyond_the_database_range(self):
+        # SQLite integers have 64 bits; larger Python ints must not crash with OverflowError.
+        huge = 10**30
+        part_id = self.inv.add_part("NE555")
+        self.inv.set_stock(part_id, "Box", 5)
+        for call in (lambda: self.inv.set_stock(part_id, "Box", huge),
+                     lambda: self.inv.set_stock(part_id, "Box", MAX_QUANTITY + 1),
+                     lambda: self.inv.adjust_stock(part_id, "Box", huge),
+                     lambda: self.inv.adjust_stock(part_id, "Box", MAX_QUANTITY),
+                     lambda: self.inv.set_min_quantity(part_id, huge)):
+            with self.assertRaisesRegex(InventoryError, "must not be larger than"):
+                call()
+        self.inv.set_stock(part_id, "Bench", MAX_QUANTITY)
+        with self.assertRaisesRegex(InventoryError, "must not be larger than"):
+            self.inv.move_stock(part_id, "Box", "Bench")
+        self.assertEqual(self.inv.get_part(part_id).total_quantity, MAX_QUANTITY + 5)
+        with self.assertRaisesRegex(InventoryError, "only 5 in 'Box'"):
+            self.inv.adjust_stock(part_id, "Box", -huge)
+        for call in (lambda: self.inv.get_part(huge), lambda: self.inv.get_parts([part_id, huge]),
+                     lambda: self.inv.find_part(f"#{huge}"), lambda: self.inv.stock_history(huge),
+                     lambda: self.inv.delete_part(huge), lambda: self.inv.get_attachment(huge),
+                     lambda: self.inv.remove_attachment(huge), lambda: self.inv.add_tags(-huge, ["x"])):
+            with self.assertRaises(NotFoundError):
+                call()
+        self.assertEqual(len(self.inv.stock_history(limit=huge)), 2)
+        self.assertEqual(self.inv.get_part(part_id).stock[0].quantity, MAX_QUANTITY)
 
 
 class MigrationTest(unittest.TestCase):

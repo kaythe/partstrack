@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself when connecting (DNS rebinding) could be used to download from
   services that only the server can reach.
 
+### Fixed
+
+- Very large numbers no longer crash the web interface (error 500, losing
+  what was typed into the add form), the API or the CLI (a traceback).
+  Quantities and minimum quantities can be at most 1000000000000, and larger
+  ones are refused with a message. Ids too large to exist are reported as not
+  found. Whole numbers in an imported CSV are no longer rounded on the way
+  through a floating-point number.
+
 ## [1.2.0] - 2026-11-05
 
 ### Changed

@@ -265,6 +265,10 @@ def _split_list(text: str) -> list[str]:
 
 def _parse_quantity(text: str, what: str = "quantity") -> int:
     try:
+        return int(text)  # exact, also for numbers too large for a float
+    except ValueError:
+        pass
+    try:
         number = float(text)
     except ValueError:
         raise InventoryError(f"invalid {what} '{text}'") from None

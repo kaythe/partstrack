@@ -95,6 +95,19 @@ class CommandTest(unittest.TestCase):
         self.assertIn("read-only copy", err.getvalue())
         self.assertIn("Stock (total 5)", out.getvalue())
 
+    def test_numbers_beyond_the_database_range(self):
+        self.run_cli("add", "NE555", "-q", "5", "-l", "Box")
+        huge = "9" * 30
+        for args in (["stock", "NE555", "Box", huge], ["stock", "NE555", "Box", "+" + huge],
+                     ["add", "R2", "-q", huge, "-l", "Box"], ["add", "R3", "--min", huge],
+                     ["detach", huge], ["show", "#" + huge]):
+            with self.subTest(args=args):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["--db", self.db, *args]), 1)
+                self.assertTrue(err.getvalue().startswith("error: "), err.getvalue())
+        self.assertIn("Stock (total 5)", self.run_cli("show", "NE555"))
+
 
 if __name__ == "__main__":
     unittest.main()
