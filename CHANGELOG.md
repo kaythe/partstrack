@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because it is on a drive that is not connected), the app asks whether to
   create a new, empty one there or to open the default database, instead of
   silently starting with an empty inventory.
+- The CLI reports more errors as `error: …` instead of a Python traceback:
+  files it cannot write (e.g. `export -o` into a missing folder), databases
+  it cannot open or that aren't databases, and an invalid `--delimiter`
+  (which now gets the usual usage message). Stopping to read the output
+  early, as in `partstrack list | head`, is no longer an error.
 
 ## [1.2.0] - 2026-11-05
 
