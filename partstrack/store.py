@@ -359,12 +359,61 @@ def _check_download_url(url: str, allow_local: bool) -> None:
     except socket.gaierror:
         raise InventoryError(f"cannot find the server {parsed.hostname}") from None
     for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%")[0])
-        if address.version == 6 and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        if (address.is_loopback or address.is_link_local or address.is_unspecified
-                or address.is_multicast or address.is_reserved):
-            raise InventoryError(f"refusing to download from {parsed.hostname}, a local or reserved address")
+        _check_address(parsed.hostname, info[4][0])
+
+
+def _check_address(host: str, address_text: str) -> None:
+    address = ipaddress.ip_address(address_text.split("%")[0])
+    if address.version == 6 and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if (address.is_loopback or address.is_link_local or address.is_unspecified
+            or address.is_multicast or address.is_reserved):
+        raise InventoryError(f"refusing to download from {host}, a local or reserved address")
+
+
+def _checked_create_connection(connection: http.client.HTTPConnection):
+    """Wrap a connection's socket factory so that the address actually connected
+    to is checked as well. The name is resolved again when connecting, and may
+    then point somewhere else than when _check_download_url looked (DNS
+    rebinding). Connections to a proxy (tunnels) are not checked: the proxy
+    resolves the name, and the URL was checked before."""
+    create = connection._create_connection
+
+    def create_checked(address, *args, **kwargs):
+        sock = create(address, *args, **kwargs)
+        if not connection._tunnel_host:
+            try:
+                _check_address(connection.host, sock.getpeername()[0])
+            except InventoryError:
+                sock.close()
+                raise
+        return sock
+
+    connection._create_connection = create_checked
+
+
+class _CheckedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _checked_create_connection(self)
+
+
+class _CheckedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _checked_create_connection(self)
+
+
+class _CheckedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        # Through a plain HTTP proxy the connection goes to the proxy.
+        connection = http.client.HTTPConnection if req.has_proxy() else _CheckedHTTPConnection
+        return self.do_open(connection, req)
+
+
+class _CheckedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_CheckedHTTPSConnection, req, context=self._context)
 
 
 class _CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -379,7 +428,10 @@ class _CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _download(url: str, dest: Path, *, allow_local: bool) -> None:
     _check_download_url(url, allow_local)
-    opener = urllib.request.build_opener(_CheckedRedirectHandler(allow_local))
+    handlers = [_CheckedRedirectHandler(allow_local)]
+    if not allow_local:
+        handlers += [_CheckedHTTPHandler(), _CheckedHTTPSHandler()]
+    opener = urllib.request.build_opener(*handlers)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with opener.open(request, timeout=DOWNLOAD_TIMEOUT) as response, open(dest, "wb") as out:

@@ -15,10 +15,13 @@
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import io
+import os
+import socket
 import tempfile
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from partstrack.csvio import import_csv
 from partstrack.store import Inventory, InventoryError, _CheckedRedirectHandler, downloadable_name
@@ -92,6 +95,30 @@ class DownloadTest(unittest.TestCase):
         attachment_id = self.inv.add_attachment(self.part_id, "http://169.254.169.254/latest/meta.json")
         with self.assertRaisesRegex(InventoryError, "local or reserved address"):
             self.inv.download_attachment(attachment_id)
+
+    def test_name_that_resolves_differently_on_connect_is_refused(self):
+        # DNS rebinding: the name passes the check with a public address and then
+        # resolves to this machine when urllib connects.
+        real_getaddrinfo = socket.getaddrinfo
+        lookups = []
+
+        def rebinding_getaddrinfo(host, port, *args, **kwargs):
+            if host != "rebind.test":
+                return real_getaddrinfo(host, port, *args, **kwargs)
+            lookups.append(host)
+            address = "93.184.216.34" if len(lookups) == 1 else "127.0.0.1"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port or 0))]
+
+        with serve({"/ds.pdf": (200, "application/pdf", PDF)}) as base:
+            port = base.rsplit(":", 1)[1]
+            attachment_id = self.inv.add_attachment(self.part_id, f"http://rebind.test:{port}/ds.pdf")
+            with mock.patch.object(Inventory, "allow_local_downloads", False), \
+                    mock.patch.dict(os.environ, {"no_proxy": "*"}), \
+                    mock.patch("socket.getaddrinfo", rebinding_getaddrinfo):
+                with self.assertRaisesRegex(InventoryError, "local or reserved address"):
+                    self.inv.download_attachment(attachment_id)
+        self.assertGreaterEqual(len(lookups), 2)
+        self.assertIsNotNone(self.inv.get_attachment(attachment_id).url)  # still a link
 
     def test_redirect_to_local_address_is_refused(self):
         handler = _CheckedRedirectHandler(allow_local=False)

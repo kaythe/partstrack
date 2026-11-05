@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Downloading a link now also checks the address the download actually
+  connects to, not only the one the name had a moment before. A server name
+  that pointed to a public address when it was checked and to the server
+  itself when connecting (DNS rebinding) could be used to download from
+  services that only the server can reach.
+
 ## [1.2.0] - 2026-11-05
 
 ### Changed
