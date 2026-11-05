@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   named like the backups (e.g. `partstrack-old.tar.gz`) are no longer counted
   or deleted, and a second run within the same second no longer overwrites
   the first one's backup.
+- Backups made by the backup script can be opened in the desktop app even if
+  the `attachments` folder contains symbolic or hard links. The script now
+  leaves out symbolic links, as the server's snapshots do, and stores
+  hard-linked files as ordinary files. Backups made earlier that contain
+  links still have to be restored with `tar`.
 
 ## [1.2.0] - 2026-11-05
 

@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from partstrack.snapshot import BACKUP, unpack_copy
 from partstrack.store import Inventory
 
 SCRIPT = Path(__file__).resolve().parent.parent / "contrib" / "systemd" / "partstrack-backup"
@@ -58,6 +59,22 @@ class BackupScriptTest(unittest.TestCase):
         made = [b for b in backups if b not in old and b != "partstrack-manual.tar.gz"]
         self.assertEqual(len(made), 2)
         self.assertEqual(len(backups), 3)
+
+    def test_backup_with_links_in_attachments_can_be_opened(self):
+        attachments = self.db.parent / "attachments" / "1"
+        attachments.mkdir(parents=True)
+        (attachments / "ds.pdf").write_bytes(b"%PDF")
+        os.link(attachments / "ds.pdf", attachments / "same.pdf")  # tar stores this as a hard link
+        outside = Path(self.tmp.name) / "outside.txt"
+        outside.write_text("not part of the backup")
+        (attachments / "link.txt").symlink_to(outside)
+        result = self.run_script("5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [backup] = self.dest.glob("partstrack-*.tar.gz")
+        db_path = unpack_copy(backup, Path(self.tmp.name) / "opened", source=str(backup), kind=BACKUP)
+        files = sorted(p.name for p in (db_path.parent / "attachments" / "1").iterdir())
+        self.assertEqual(files, ["ds.pdf", "same.pdf"])
+        self.assertEqual((db_path.parent / "attachments" / "1" / "same.pdf").read_bytes(), b"%PDF")
 
     def test_invalid_keep_is_refused_before_anything_is_deleted(self):
         self.dest.mkdir()

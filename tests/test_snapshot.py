@@ -244,7 +244,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(read_copy_info(db_path).source, "an unknown server")
 
     def test_backup_from_the_backup_script(self):
-        # Like contrib/systemd/partstrack-backup: tar -czf ... -C work parts.db -C data attachments
+        # Like contrib/systemd/partstrack-backup: parts.db, then the folders and files of attachments/
         database = self.dir / "work" / "parts.db"
         database.parent.mkdir()
         copy = sqlite3.connect(database)
