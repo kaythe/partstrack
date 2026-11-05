@@ -2053,6 +2053,26 @@ def dark_palette() -> QPalette:
     return palette
 
 
+def startup_database(db_arg: Path | None, settings: QSettings) -> Path:
+    """The database to open at start: --db, else $PARTSTRACK_DB or the default
+    one, else the one opened last. Opening a missing database creates it, so if
+    the one opened last is gone (e.g. on a drive that isn't connected), ask
+    first instead of silently showing a new, empty inventory."""
+    if db_arg is not None:
+        return db_arg
+    if os.environ.get("PARTSTRACK_DB") or not settings.value("database"):
+        return default_db_path()
+    remembered = Path(settings.value("database"))
+    if remembered.exists() or remembered == default_db_path():
+        return remembered
+    question = (
+        f"The database opened last, {remembered}, does not exist any more. It may be on a drive "
+        f"that is not connected.\n\nCreate a new, empty database there? "
+        f"No opens the default database, {default_db_path()}."
+    )
+    return remembered if confirm(None, question) else default_db_path()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="partstrack-desktop", description="Desktop app for the parts inventory.")
     parser.add_argument("--db", type=Path, default=None,
@@ -2070,13 +2090,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = QSettings()
     apply_theme(settings.value("theme", "auto"))
 
-    if args.db is not None:
-        db_path = args.db
-    elif os.environ.get("PARTSTRACK_DB") or not settings.value("database"):
-        db_path = default_db_path()
-    else:
-        db_path = Path(settings.value("database"))
-
+    db_path = startup_database(args.db, settings)
     window = MainWindow(db_path, settings)
     if not window.open_database(db_path):
         return 1

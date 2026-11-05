@@ -134,6 +134,14 @@ class CsvTest(unittest.TestCase):
         with self.assertRaises(InventoryError):
             self.import_text("name,minimum\nNE555,-1\n")
 
+    def test_large_quantities(self):
+        self.import_text("name,location,quantity\nR1,Box,999999999999\n")
+        with self.assertRaisesRegex(InventoryError, "line 2: quantity must not be larger than"):
+            self.import_text("name,location,quantity\nR2,Box,1e20\n")
+        self.assertEqual(self.inv.get_part(self.inv.find_part("R1")).total_quantity, 999999999999)
+        with self.assertRaisesRegex(InventoryError, "line 2: quantity must not be larger than"):
+            self.import_text("name,location,quantity\nR1,Box,123456789012345678901234567890\n")
+
 
 if __name__ == "__main__":
     unittest.main()

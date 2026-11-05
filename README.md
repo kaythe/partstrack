@@ -345,7 +345,8 @@ copied with SQLite's backup API, so this is safe while the web server or the
 desktop app is running.
 
 The script can also be run by hand: `partstrack-backup DEST_DIR`. `KEEP` sets
-the number of backups to keep and `PARTSTRACK_DB` the database to back up.
+the number of backups to keep (at least 1) and `PARTSTRACK_DB` the database to
+back up. Only files named like the backups are ever deleted.
 
 For your own database, use the user units in `contrib/systemd/user/`:
 

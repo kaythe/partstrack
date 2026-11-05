@@ -19,6 +19,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from partstrack.store import Inventory
 
@@ -438,6 +439,28 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(self.window.db_path, self.db)
         self.assertFalse(self.window.read_only)
         self.assertEqual(sorted(p.name for p in (self.dir / "mine").iterdir()), ["notes.txt"])
+
+    def test_missing_database_from_last_time_is_not_silently_recreated(self):
+        default = self.dir / "default" / "parts.db"
+        self._patch("default_db_path", lambda: default)
+        settings = QSettings(str(self.dir / "start.ini"), QSettings.Format.IniFormat)
+        gone = self.dir / "usb-drive" / "parts.db"
+        settings.setValue("database", str(gone))
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PARTSTRACK_DB", None)
+            self.answers = [False]
+            self.assertEqual(desktop.startup_database(None, settings), default)
+            self.assertEqual(self.answers, [])  # it asked
+            self.answers = [True]
+            self.assertEqual(desktop.startup_database(None, settings), gone)
+            self.assertFalse(gone.parent.exists())  # nothing created yet; opening creates it
+            self.assertEqual(desktop.startup_database(self.db, settings), self.db)
+            settings.setValue("database", str(self.db))
+            self.answers = [False]
+            self.assertEqual(desktop.startup_database(None, settings), self.db)  # exists: no question
+            self.assertEqual(self.answers, [False])
+            os.environ["PARTSTRACK_DB"] = str(self.dir / "env.db")
+            self.assertEqual(desktop.startup_database(None, settings), default)
 
     def test_open_backup(self):
         from partstrack.snapshot import write_snapshot

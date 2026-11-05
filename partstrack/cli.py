@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -318,6 +319,13 @@ def cmd_tags(inv: Inventory, args: argparse.Namespace) -> None:
     print_table(["Tag", "Parts"], [[name, count] for name, count in tags])
 
 
+def csv_delimiter(text: str) -> str:
+    """argparse type for --delimiter: what Python's csv module accepts."""
+    if len(text) != 1 or text in '"\r\n':
+        raise argparse.ArgumentTypeError("must be a single character other than '\"' or a line break")
+    return text
+
+
 def cmd_export(inv: Inventory, args: argparse.Namespace) -> None:
     encoding = "utf-8-sig" if args.bom else "utf-8"
     if args.output is None:
@@ -523,7 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("export", help="export all parts as CSV")
     p.add_argument("-o", "--output", type=Path, help="CSV file to write (default: standard output)")
-    p.add_argument("--delimiter", default=",", help="field separator (default: ','; German Excel wants ';')")
+    p.add_argument("--delimiter", type=csv_delimiter, default=",", help="field separator (default: ','; German Excel wants ';')")
     p.add_argument("--bom", action="store_true", help="start the file with a UTF-8 BOM so Excel detects the encoding")
     p.set_defaults(func=cmd_export)
 
@@ -537,7 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file", type=Path)
     p.add_argument("--add-stock", action="store_true", help="add quantities to the existing stock instead of replacing it")
     p.add_argument("-l", "--location", help="location for rows that have a quantity but no location")
-    p.add_argument("--delimiter", help="field separator (default: guessed from the header)")
+    p.add_argument("--delimiter", type=csv_delimiter, help="field separator (default: guessed from the header)")
     p.add_argument("--dry-run", action="store_true", help="check the file without saving anything")
     p.add_argument("--link", action="store_true", help=LINK_HELP)
     p.set_defaults(func=cmd_import)
@@ -547,11 +555,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    db_path = args.db or default_db_path()
     try:
-        with open_inventory(args.db or default_db_path()) as inv:
+        with open_inventory(db_path) as inv:
             args.func(inv, args)
+        sys.stdout.flush()  # so a closed pipe shows here, not at exit
     except InventoryError as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
+    except BrokenPipeError:
+        # The reader stopped early (`partstrack list | head`). Send the rest of
+        # the output nowhere, so flushing it at exit doesn't fail again.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 1
+    except OSError as e:
+        print(f"error: {e.strerror or e}{f': {e.filename}' if e.filename else ''}", file=sys.stderr)
+        return 1
+    except sqlite3.Error as e:
+        print(f"error: {db_path}: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

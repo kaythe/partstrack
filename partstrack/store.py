@@ -53,6 +53,9 @@ DOWNLOAD_TIMEOUT = 30  # seconds without data before a download is given up
 MAX_DOWNLOAD_SIZE = 200 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 (compatible; partstrack)"
 LOCATION_SEPARATOR = "/"
+# Largest quantity per location and largest minimum quantity. SQLite integers
+# have 64 bits; staying far below that means sums of quantities can't overflow.
+MAX_QUANTITY = 10**12
 NEW_PART_NOTE = "new part"  # stock history note for the initial stock of a part being added
 
 # Prefix for queries that need the full path of each location.
@@ -359,12 +362,61 @@ def _check_download_url(url: str, allow_local: bool) -> None:
     except socket.gaierror:
         raise InventoryError(f"cannot find the server {parsed.hostname}") from None
     for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%")[0])
-        if address.version == 6 and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        if (address.is_loopback or address.is_link_local or address.is_unspecified
-                or address.is_multicast or address.is_reserved):
-            raise InventoryError(f"refusing to download from {parsed.hostname}, a local or reserved address")
+        _check_address(parsed.hostname, info[4][0])
+
+
+def _check_address(host: str, address_text: str) -> None:
+    address = ipaddress.ip_address(address_text.split("%")[0])
+    if address.version == 6 and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if (address.is_loopback or address.is_link_local or address.is_unspecified
+            or address.is_multicast or address.is_reserved):
+        raise InventoryError(f"refusing to download from {host}, a local or reserved address")
+
+
+def _checked_create_connection(connection: http.client.HTTPConnection):
+    """Wrap a connection's socket factory so that the address actually connected
+    to is checked as well. The name is resolved again when connecting, and may
+    then point somewhere else than when _check_download_url looked (DNS
+    rebinding). Connections to a proxy (tunnels) are not checked: the proxy
+    resolves the name, and the URL was checked before."""
+    create = connection._create_connection
+
+    def create_checked(address, *args, **kwargs):
+        sock = create(address, *args, **kwargs)
+        if not connection._tunnel_host:
+            try:
+                _check_address(connection.host, sock.getpeername()[0])
+            except InventoryError:
+                sock.close()
+                raise
+        return sock
+
+    connection._create_connection = create_checked
+
+
+class _CheckedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _checked_create_connection(self)
+
+
+class _CheckedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _checked_create_connection(self)
+
+
+class _CheckedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        # Through a plain HTTP proxy the connection goes to the proxy.
+        connection = http.client.HTTPConnection if req.has_proxy() else _CheckedHTTPConnection
+        return self.do_open(connection, req)
+
+
+class _CheckedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_CheckedHTTPSConnection, req, context=self._context)
 
 
 class _CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -379,7 +431,10 @@ class _CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _download(url: str, dest: Path, *, allow_local: bool) -> None:
     _check_download_url(url, allow_local)
-    opener = urllib.request.build_opener(_CheckedRedirectHandler(allow_local))
+    handlers = [_CheckedRedirectHandler(allow_local)]
+    if not allow_local:
+        handlers += [_CheckedHTTPHandler(), _CheckedHTTPSHandler()]
+    opener = urllib.request.build_opener(*handlers)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with opener.open(request, timeout=DOWNLOAD_TIMEOUT) as response, open(dest, "wb") as out:
@@ -515,6 +570,17 @@ def whole_number(text: str) -> int | None:
     like '²' that int() refuses."""
     text = text.strip()
     return int(text) if text.isascii() and text.isdigit() else None
+
+
+def _fits_sqlite(value: object) -> bool:
+    """False for ints that SQLite can't store (it has 64 bits): sqlite3 raises
+    OverflowError for them, and they can't be the id of anything."""
+    return not isinstance(value, int) or -(2**63) <= value < 2**63
+
+
+def _check_quantity(quantity: int, what: str = "quantity") -> None:
+    if quantity > MAX_QUANTITY:
+        raise InventoryError(f"{what} must not be larger than {MAX_QUANTITY}")
 
 
 def _path_key(path: str) -> list[str]:
@@ -703,6 +769,8 @@ class Inventory:
         """Set the total below which a part counts as low on stock; None removes the threshold."""
         if min_quantity is not None and min_quantity < 0:
             raise InventoryError("minimum quantity must not be negative")
+        if min_quantity is not None:
+            _check_quantity(min_quantity, "minimum quantity")
         with self.transaction():
             self._require_part(part_id)
             self.conn.execute(
@@ -734,14 +802,14 @@ class Inventory:
             if part_id is not None:
                 return part_id
         number = whole_number(ref.removeprefix("#"))
-        if number is not None:
+        if number is not None and _fits_sqlite(number):
             row = self.conn.execute("SELECT id FROM parts WHERE id = ?", (number,)).fetchone()
             if row:
                 return row["id"]
         raise NotFoundError(f"no part '{ref}'")
 
     def get_part(self, part_id: int) -> Part:
-        parts = self._load_parts("SELECT ?", [part_id])
+        parts = self._load_parts("SELECT ?", [part_id]) if _fits_sqlite(part_id) else []
         if not parts:
             raise NotFoundError(f"no part with id {part_id}")
         return parts[0]
@@ -751,7 +819,8 @@ class Inventory:
         wanted = list(dict.fromkeys(part_ids))
         if not wanted:
             return []
-        parts = self._load_parts(f"SELECT id FROM parts WHERE id IN ({', '.join('?' * len(wanted))})", wanted)
+        valid = [i for i in wanted if _fits_sqlite(i)]  # others can't exist
+        parts = self._load_parts(f"SELECT id FROM parts WHERE id IN ({', '.join('?' * len(valid))})", valid)
         if len(parts) < len(wanted):
             missing = sorted(set(wanted) - {p.id for p in parts})
             raise NotFoundError(f"no part with id {missing[0]}")
@@ -1215,7 +1284,7 @@ class Inventory:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY l.id DESC"
-        if limit is not None:
+        if limit is not None and _fits_sqlite(limit):
             sql += " LIMIT ?"
             params.append(limit)
         return [
@@ -1271,7 +1340,9 @@ class Inventory:
         return cur.lastrowid
 
     def remove_attachment(self, attachment_id: int) -> None:
-        row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        row = None
+        if _fits_sqlite(attachment_id):
+            row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"no attachment with id {attachment_id}")
         with self.transaction():
@@ -1351,7 +1422,9 @@ class Inventory:
         return results
 
     def get_attachment(self, attachment_id: int) -> Attachment:
-        row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        row = None
+        if _fits_sqlite(attachment_id):
+            row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"no attachment with id {attachment_id}")
         return self._attachment_from_row(row)
@@ -1383,7 +1456,9 @@ class Inventory:
         return name
 
     def _require_part(self, part_id: int) -> None:
-        if not self.conn.execute("SELECT 1 FROM parts WHERE id = ?", (part_id,)).fetchone():
+        if not _fits_sqlite(part_id) or not self.conn.execute(
+            "SELECT 1 FROM parts WHERE id = ?", (part_id,)
+        ).fetchone():
             raise NotFoundError(f"no part with id {part_id}")
 
     def _touch(self, part_id: int) -> None:
@@ -1448,6 +1523,7 @@ class Inventory:
     def _write_stock(self, part_id: int, location_id: int, quantity: int, *, action: str, note: str) -> None:
         """Store a new quantity and record the change in the stock history.
         Call it inside a transaction, so the change and its record are saved together."""
+        _check_quantity(quantity)
         delta = quantity - self._read_stock(part_id, location_id)
         if delta:
             self.conn.execute(

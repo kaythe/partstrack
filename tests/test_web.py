@@ -147,6 +147,33 @@ class WebTest(unittest.TestCase):
         response = self.client.post("/parts/bulk", data={"part": "²", "op": "add_tags", "tags": "x"})
         self.assertEqual(response.status_code, 302)
 
+    def test_numbers_beyond_the_database_range(self):
+        self.add_part()
+        huge = "9" * 30
+        for url in [f"/parts/{huge}", f"/parts/{huge}/edit", f"/attachments/{huge}"]:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 404)
+        for url in [f"/history?part={huge}", f"/parts/new?copy={huge}", f"/parts/bulk?part={huge}",
+                    f"/labels?part={huge}"]:
+            with self.subTest(url=url):
+                self.assertIn(self.client.get(url).status_code, (200, 302, 404))
+        response = self.add_part(name="LM358", quantity=huge, description="kept")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("must not be larger than", response.get_data(as_text=True))
+        self.assertIn('value="kept"', response.get_data(as_text=True))
+        response = self.add_part(name="LM358", min_quantity=huge)
+        self.assertIn("must not be larger than", response.get_data(as_text=True))
+        with self.inventory() as inv:
+            part_id = inv.find_part("NE555")
+        for path, data in [(f"/parts/{part_id}/stock", {"op": "add", "amount": huge, "location": "/Cabinet A/Drawer 1"}),
+                           ("/parts/bulk", {"part": huge, "op": "add_tags", "tags": "x"}),
+                           (f"/parts/{huge}/attachments", {"links": "https://example.com/x"})]:
+            with self.subTest(path=path):
+                self.assertIn(self.client.post(path, data=data).status_code, (302, 404))
+        with self.inventory() as inv:
+            self.assertEqual(inv.get_part(part_id).total_quantity, 20)
+            self.assertEqual(len(inv.list_parts()), 1)
+
     def test_stock_actions(self):
         self.add_part()
         with self.inventory() as inv:

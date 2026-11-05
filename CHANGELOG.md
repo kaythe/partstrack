@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Downloading a link now also checks the address the download actually
+  connects to, not only the one the name had a moment before. A server name
+  that pointed to a public address when it was checked and to the server
+  itself when connecting (DNS rebinding) could be used to download from
+  services that only the server can reach.
+
+### Fixed
+
+- Very large numbers no longer crash the web interface (error 500, losing
+  what was typed into the add form), the API or the CLI (a traceback).
+  Quantities and minimum quantities can be at most 1000000000000, and larger
+  ones are refused with a message. Ids too large to exist are reported as not
+  found. Whole numbers in an imported CSV are no longer rounded on the way
+  through a floating-point number.
+- The backup script `contrib/systemd/partstrack-backup` no longer deletes
+  every backup, including the new one, when `KEEP` is 0. `KEEP` must now be a
+  whole number of at least 1. Files in the destination folder that are not
+  named like the backups (e.g. `partstrack-old.tar.gz`) are no longer counted
+  or deleted, and a second run within the same second no longer overwrites
+  the first one's backup.
+- Backups made by the backup script can be opened in the desktop app even if
+  the `attachments` folder contains symbolic or hard links. The script now
+  leaves out symbolic links, as the server's snapshots do, and stores
+  hard-linked files as ordinary files. Backups made earlier that contain
+  links still have to be restored with `tar`.
+- If the database the desktop app opened last no longer exists (for example
+  because it is on a drive that is not connected), the app asks whether to
+  create a new, empty one there or to open the default database, instead of
+  silently starting with an empty inventory.
+- The CLI reports more errors as `error: …` instead of a Python traceback:
+  files it cannot write (e.g. `export -o` into a missing folder), databases
+  it cannot open or that aren't databases, and an invalid `--delimiter`
+  (which now gets the usual usage message). Stopping to read the output
+  early, as in `partstrack list | head`, is no longer an error.
+
 ## [1.2.0] - 2026-11-05
 
 ### Changed

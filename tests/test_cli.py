@@ -16,6 +16,8 @@
 
 import contextlib
 import io
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,6 +96,60 @@ class CommandTest(unittest.TestCase):
             self.assertEqual(main(["--db", copy, "show", "NE555"]), 0)
         self.assertIn("read-only copy", err.getvalue())
         self.assertIn("Stock (total 5)", out.getvalue())
+
+    def test_numbers_beyond_the_database_range(self):
+        self.run_cli("add", "NE555", "-q", "5", "-l", "Box")
+        huge = "9" * 30
+        for args in (["stock", "NE555", "Box", huge], ["stock", "NE555", "Box", "+" + huge],
+                     ["add", "R2", "-q", huge, "-l", "Box"], ["add", "R3", "--min", huge],
+                     ["detach", huge], ["show", "#" + huge]):
+            with self.subTest(args=args):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["--db", self.db, *args]), 1)
+                self.assertTrue(err.getvalue().startswith("error: "), err.getvalue())
+        self.assertIn("Stock (total 5)", self.run_cli("show", "NE555"))
+
+    def run_failing(self, *args, db=None):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--db", db or self.db, *args]), 1)
+        self.assertTrue(err.getvalue().startswith("error: "), err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+        return err.getvalue()
+
+    def test_file_and_database_errors_are_reported_without_traceback(self):
+        self.run_cli("add", "NE555")
+        self.assertIn("nonexistent", self.run_failing("export", "-o", str(Path(self.tmp.name) / "nonexistent" / "x.csv")))
+        self.assertIn(self.tmp.name, self.run_failing("list", db=self.tmp.name))  # a folder
+        not_a_db = Path(self.tmp.name) / "notes.txt"
+        not_a_db.write_text("just text, " * 100)
+        self.assertIn("notes.txt", self.run_failing("list", db=str(not_a_db)))
+
+    def test_invalid_delimiter_is_a_usage_error(self):
+        for delimiter in (";;", "", '"', "\n"):
+            for command in (["export"], ["import", "x.csv"]):
+                with self.subTest(delimiter=delimiter, command=command):
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exit:
+                        main(["--db", self.db, *command, "--delimiter", delimiter])
+                    self.assertEqual(exit.exception.code, 2)
+                    self.assertIn("--delimiter", err.getvalue())
+        self.run_cli("export", "--delimiter", "\t", "-o", str(Path(self.tmp.name) / "tabs.csv"))
+
+    def test_closed_output_pipe_is_not_an_error(self):
+        with Inventory(self.db) as inv, inv.transaction():
+            for i in range(3000):
+                inv.add_part(f"Part number {i:05}", description="enough text to fill the pipe's buffer")
+        process = subprocess.Popen([sys.executable, "-m", "partstrack", "--db", self.db, "list"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   cwd=Path(__file__).resolve().parent.parent)
+        process.stdout.readline()
+        process.stdout.close()  # like `partstrack list | head -1`
+        stderr = process.stderr.read().decode()
+        process.stderr.close()
+        process.wait(timeout=30)
+        self.assertEqual(stderr, "")
 
 
 if __name__ == "__main__":
