@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-05
+
 ### Security
 
 - Downloading a link now also checks the address the download actually
@@ -219,7 +221,8 @@ First release.
 - Light/dark theme switch in the web interface, with an "Auto" setting that
   follows the device.
 
-[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/kaythe/partstrack/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/kaythe/partstrack/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/kaythe/partstrack/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/kaythe/partstrack/compare/v1.0.0...v1.1.0
