@@ -267,13 +267,19 @@ partstrack token list            # names, and when each was last used
 partstrack token rm "Pixel 8"    # revoke it, e.g. for a lost phone
 ```
 
-Send it in the `Authorization` header. Bodies are JSON objects; locations are
+Send it in the `Authorization` header. To check a token without changing
+anything, e.g. when it is entered in an app, get `/api/token`: it answers
+with the token's name, or 401 if the token isn't valid, and says in
+`read_only` whether the server can save changes at all.
+
+Bodies are JSON objects; locations are
 full paths as the API returns them (`Cabinet/Drawer 3`), and missing ones are
 created where stock is put:
 
 ```sh
 TOKEN=pt_...
 AUTH="Authorization: Bearer $TOKEN"
+curl -H "$AUTH" http://parts.lan:8080/api/token    # {"name": "Pixel 8", "read_only": false, ...}
 curl -H "$AUTH" --json '{"name": "NE555", "package": "DIP-8", "tags": ["timer"],
   "stock": [{"location": "Cabinet/Drawer 3", "quantity": 20}]}' http://parts.lan:8080/api/parts
 curl -H "$AUTH" -X PATCH --json '{"min_quantity": 10}' http://parts.lan:8080/api/parts/12

@@ -196,6 +196,19 @@ class ApiChangeTest(unittest.TestCase):
         self.assertEqual([p.name for p in self.inventory().list_parts()], ["NE555"])  # nothing changed
         self.assertEqual(len(self.inventory().list_locations()), 4)
 
+    def test_check_token(self):
+        token = self.send("GET", "/api/token")
+        self.assertEqual((token["name"], token["read_only"]), ("Phone", False))
+        self.assertEqual(set(token), {"id", "name", "created_at", "read_only"})  # never the token or its hash
+        self.assertIsNotNone(self.inventory().list_tokens()[0].last_used_at)
+        response = self.client.get("/api/token")
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("this needs an API token", response.get_json()["error"])
+        response = self.client.get("/api/token", headers={"Authorization": "Bearer pt_wrong"})
+        self.assertEqual((response.status_code, response.get_json()), (401, {"error": "unknown or revoked API token"}))
+        self.assertIn('error="invalid_token"', response.headers["WWW-Authenticate"])
+        self.assertIn("/api/token", self.send("GET", "/api", token=False)["endpoints"])
+
     def test_token_requests_need_no_same_site_headers(self):
         # A phone app sends none of them; a browser page here would send same-origin.
         # Either way the token decides, and a cross-site page couldn't add it.
@@ -472,6 +485,7 @@ class ApiChangeTest(unittest.TestCase):
         error = self.send("POST", "/api/parts", {"name": "LM358"}, 409)["error"]
         self.assertIn("read-only copy", error)
         self.send("POST", "/api/parts", {"name": "LM358"}, 401, token=False)  # no token: still 401
+        self.assertTrue(self.send("GET", "/api/token")["read_only"])  # the token is fine, changes aren't
 
 
 if __name__ == "__main__":

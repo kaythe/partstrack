@@ -103,18 +103,25 @@ def _require_token():
     """Changes need a valid API token; reading needs none."""
     if request.method in SAFE_METHODS:
         return None
+    if (refused := _authenticate("changes need")) is not None:
+        return refused
+    if inventory().read_only:
+        return jsonify(error="this server shows a read-only copy; changes can't be saved"), 409
+    return None
+
+
+def _authenticate(subject: str):
+    """Check the token in the Authorization header and keep it in g.api_token;
+    returns the answer to send instead if it is missing or not valid."""
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     token = token.strip()
     if scheme.lower() != "bearer" or not token:
         return _unauthorized(
-            "changes need an API token (see 'partstrack token add') in the header 'Authorization: Bearer <token>'"
+            f"{subject} an API token (see 'partstrack token add') in the header 'Authorization: Bearer <token>'"
         )
-    inv = inventory()
-    g.api_token = inv.check_token(token)
+    g.api_token = inventory().check_token(token)
     if g.api_token is None:
         return _unauthorized("unknown or revoked API token", ', error="invalid_token"')
-    if inv.read_only:
-        return jsonify(error="this server shows a read-only copy; changes can't be saved"), 409
     return None
 
 
@@ -135,6 +142,7 @@ def index():
             "/api/history": "stock changes, newest first; filters: part (id), location, limit (default 50, 0 for all)",
             "/api/locations/<id>": "one location",
             "/api/snapshot": "the database and attachments as .tar.gz, for the desktop app's read-only copies",
+            "/api/token": "checks the API token sent (401 if it isn't valid) and whether changes can be saved",
         },
         authentication="changes need an API token (see 'partstrack token add') "
                        "in the header 'Authorization: Bearer <token>'",
@@ -159,6 +167,20 @@ def index():
             "PATCH /api/locations/<id>": "name, description, parent (a path, or null for the top level)",
             "DELETE /api/locations/<id>": "delete an empty location",
         },
+    )
+
+
+@api.get("/token")
+def token():
+    """For apps, to check a token when it is entered, without changing anything
+    (apart from the token's last use). Unlike other GETs, it needs the token."""
+    if (refused := _authenticate("this needs")) is not None:
+        return refused
+    return jsonify(
+        id=g.api_token.id,
+        name=g.api_token.name,
+        created_at=g.api_token.created_at,
+        read_only=inventory().read_only,  # a read-only copy: valid token, but changes are refused
     )
 
 
