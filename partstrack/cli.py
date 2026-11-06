@@ -19,9 +19,11 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import io
 import os
 import sqlite3
+import stat
 import sys
 from pathlib import Path
 
@@ -589,6 +591,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _output_closed(error: OSError) -> bool:
+    """Whether `error` means the reader of our output stopped early (`partstrack list | head`).
+    Windows reports that as EINVAL instead of a broken pipe; other EINVAL errors, such as
+    an invalid file name, either name a file or happen while the output is no pipe."""
+    if isinstance(error, BrokenPipeError):
+        return True
+    if os.name != "nt" or error.errno != errno.EINVAL or error.filename is not None:
+        return False
+    try:
+        return stat.S_ISFIFO(os.fstat(sys.stdout.fileno()).st_mode)
+    except (OSError, ValueError):  # no real file behind sys.stdout
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     db_path = args.db or default_db_path()
@@ -599,12 +615,11 @@ def main(argv: list[str] | None = None) -> int:
     except InventoryError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    except BrokenPipeError:
-        # The reader stopped early (`partstrack list | head`). Send the rest of
-        # the output nowhere, so flushing it at exit doesn't fail again.
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        return 1
     except OSError as e:
+        if _output_closed(e):
+            # Send the rest of the output nowhere, so flushing it at exit doesn't fail again.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            return 1
         print(f"error: {e.strerror or e}{f': {e.filename}' if e.filename else ''}", file=sys.stderr)
         return 1
     except sqlite3.Error as e:

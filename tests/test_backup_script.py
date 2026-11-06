@@ -67,7 +67,11 @@ class BackupScriptTest(unittest.TestCase):
         os.link(attachments / "ds.pdf", attachments / "same.pdf")  # tar stores this as a hard link
         outside = Path(self.tmp.name) / "outside.txt"
         outside.write_text("not part of the backup")
-        (attachments / "link.txt").symlink_to(outside)
+        try:
+            (attachments / "link.txt").symlink_to(outside)
+            symlinked = True
+        except OSError:  # Windows allows symlinks only with Developer Mode or as administrator
+            symlinked = False
         result = self.run_script("5")
         self.assertEqual(result.returncode, 0, result.stderr)
         [backup] = self.dest.glob("partstrack-*.tar.gz")
@@ -75,6 +79,8 @@ class BackupScriptTest(unittest.TestCase):
         files = sorted(p.name for p in (db_path.parent / "attachments" / "1").iterdir())
         self.assertEqual(files, ["ds.pdf", "same.pdf"])
         self.assertEqual((db_path.parent / "attachments" / "1" / "same.pdf").read_bytes(), b"%PDF")
+        if not symlinked:
+            self.skipTest("hard link checked; can't create a symlink here")
 
     def test_invalid_keep_is_refused_before_anything_is_deleted(self):
         self.dest.mkdir()

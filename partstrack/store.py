@@ -659,13 +659,17 @@ class Inventory:
         self._transaction_depth = 0
         self._after_commit: list[Callable[[], None]] = []
         self._after_rollback: list[Callable[[], None]] = []
-        if read_only:
-            if self.conn.execute("PRAGMA user_version").fetchone()[0] > len(MIGRATIONS):
-                self.conn.close()
-                raise InventoryError(f"{self.db_path} was created by a newer version of partstrack")
-        else:
-            self._migrate()
-        self.conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            if read_only:
+                if self.conn.execute("PRAGMA user_version").fetchone()[0] > len(MIGRATIONS):
+                    raise InventoryError(f"{self.db_path} was created by a newer version of partstrack")
+            else:
+                self._migrate()
+            self.conn.execute("PRAGMA foreign_keys = ON")
+        except BaseException:
+            # Nobody can close it later; on Windows it would keep the file locked.
+            self.conn.close()
+            raise
 
     def close(self) -> None:
         self.conn.close()

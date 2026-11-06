@@ -25,13 +25,13 @@ from partstrack.store import Inventory, InventoryError
 
 class CsvTest(unittest.TestCase):
     def setUp(self):
+        # Cleanups run in reverse, so databases tests open (and close with addCleanup) are
+        # closed before the folder is deleted; Windows can't delete an open database.
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
         self.inv = Inventory(self.dir / "a" / "parts.db")
-
-    def tearDown(self):
-        self.inv.close()
-        self.tmp.cleanup()
+        self.addCleanup(self.inv.close)
 
     def import_text(self, text, inv=None, **kwargs):
         return import_csv(inv or self.inv, io.StringIO(text), base_dir=self.dir, **kwargs)

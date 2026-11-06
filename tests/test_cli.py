@@ -16,6 +16,7 @@
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -169,6 +170,15 @@ class CommandTest(unittest.TestCase):
         process.stderr.close()
         process.wait(timeout=30)
         self.assertEqual(stderr, "")
+
+    @unittest.skipUnless(os.name == "nt", "only Windows refuses '?' in file names (with EINVAL, like a closed pipe)")
+    def test_invalid_file_name_is_an_error_while_output_is_a_pipe(self):
+        output = Path(self.tmp.name) / "a?b.csv"
+        result = subprocess.run([sys.executable, "-m", "partstrack", "--db", self.db, "export", "-o", str(output)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                cwd=Path(__file__).resolve().parent.parent, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("a?b.csv", result.stderr)
 
 
 if __name__ == "__main__":

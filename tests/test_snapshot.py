@@ -217,21 +217,31 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual([p.name for p in (self.dir / "copy").iterdir()], [])  # nothing left behind
 
     def test_unportable_attachment_names_are_renamed_in_the_copy(self):
-        # Names a Linux server can store but Windows can't (or not side by side).
+        # Names a Linux server can store but Windows can't (or not side by side). Windows can't
+        # create such files either, so the server's files go into the archive under these names.
         names = ["ds 10:30.pdf", 'a?b"c.pdf', "CON.pdf", "nul", "trailing. ", "back\\slash.png", "A_b.pdf", "a:b.pdf"]
-        contents = {}
+        contents, moved = {}, {}
         for i, name in enumerate(names):
-            source = self.dir / "src" / str(i) / name
-            source.parent.mkdir(parents=True)
+            source = self.dir / "src" / f"{i}.bin"
+            source.parent.mkdir(exist_ok=True)
             source.write_bytes(name.encode())
-            attachment_id = self.server.add_attachment(self.part_id, str(source))
-            # Store the file under its original name, as older versions did.
+            attachment_id = self.server.add_attachment(self.part_id, str(source), name=name)
+            # Stored under its original name, as older versions did (only in the archive below).
             stored = self.server.get_attachment(attachment_id).path
-            stored.rename(stored.with_name(name))
-            self.server.move_stored_attachments({f"{self.part_id}/{stored.name}": f"{self.part_id}/{name}"})
+            stored.unlink()
+            moved[f"{self.part_id}/{stored.name}"] = f"{self.part_id}/{name}"
             contents[attachment_id] = name.encode()
+        self.server.move_stored_attachments(moved)
+        archive = self.dir / "from-linux.tar.gz"
+        with tarfile.open(self.snapshot()) as snapshot, tarfile.open(archive, "w:gz") as tar:
+            for member in snapshot.getmembers():
+                tar.addfile(member, snapshot.extractfile(member) if member.isfile() else None)
+            for name in names:
+                info = tarfile.TarInfo(f"attachments/{self.part_id}/{name}")
+                info.size = len(name.encode())
+                tar.addfile(info, io.BytesIO(name.encode()))
 
-        copy = Inventory(unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/"), read_only=True)
+        copy = Inventory(unpack_copy(archive, self.dir / "copy", source="http://a/"), read_only=True)
         self.addCleanup(copy.close)
         files = [copy.get_attachment(i).path for i in contents]
         for attachment_id, path in zip(contents, files):
@@ -261,9 +271,11 @@ class SnapshotTest(unittest.TestCase):
 
     def test_older_copy_is_upgraded_when_opened(self):
         db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
-        with sqlite3.connect(db_path) as conn:  # as if an older partstrack had made it
+        conn = sqlite3.connect(db_path)  # as if an older partstrack had made it
+        with conn:  # commits, but doesn't close
             conn.execute(f"PRAGMA user_version = {len(MIGRATIONS) - 1}")
             conn.execute("DROP TABLE api_tokens")  # what the last migration adds
+        conn.close()
         with Inventory(db_path, read_only=True) as copy:
             self.assertEqual(copy.list_tokens(), [])
             self.assertEqual(copy.get_part(self.part_id).name, "NE555")
