@@ -267,6 +267,12 @@ partstrack token list            # names, and when each was last used
 partstrack token rm "Pixel 8"    # revoke it, e.g. for a lost phone
 ```
 
+If the `segno` package is installed (`pip install segno`, or the `qr`, `web`
+or `desktop` extra), `token add` also shows the token as a QR code in the
+terminal, so a phone can scan it instead of typing it. The code holds only
+the token. Without `segno`, or when the output isn't a terminal, only the
+text is printed.
+
 Send it in the `Authorization` header. To check a token without changing
 anything, e.g. when it is entered in an app, get `/api/token`: it answers
 with the token's name, or 401 if the token isn't valid, and says in

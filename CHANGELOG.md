@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `partstrack token add` also shows the new token as a QR code in the
+  terminal, so an app can scan it instead of it being typed. This needs the
+  optional `segno` package (`pip install segno`, or the new `qr` extra); without
+  it, or when the output isn't a terminal, only the text is printed as before.
+
 ## [1.4.0] - 2026-11-06
 
 ### Added

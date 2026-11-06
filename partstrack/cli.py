@@ -29,6 +29,7 @@ from pathlib import Path
 
 from . import __version__
 from .csvio import decode_csv, export_csv, import_csv
+from .labels import qr_matrix
 from .snapshot import open_inventory
 from .store import ATTACHMENT_KINDS, EDITABLE_FIELDS, NEW_PART_NOTE, Inventory, InventoryError, Part
 
@@ -327,7 +328,59 @@ def cmd_token_add(inv: Inventory, args: argparse.Namespace) -> None:
     print()
     print(f"    {token}")
     print()
+    # Only for people at a terminal that can show it: scripts reading the output get the
+    # plain text, and a failure here would come after the token was already saved.
+    if sys.stdout.isatty() and _can_show("".join(QR_BLOCKS.values())) and (code := terminal_qr(token)):
+        _enable_terminal_colours()
+        print("Or scan it with the app:")
+        print()
+        print(code)
     print("Send it with changes to the web API as the header 'Authorization: Bearer <token>'.")
+
+
+QR_BLOCKS = {(False, False): " ", (True, False): "▀", (False, True): "▄", (True, True): "█"}
+
+
+def _can_show(text: str) -> bool:
+    """Whether standard output's encoding has all characters of `text` (not e.g. with LANG=C)."""
+    try:
+        text.encode(sys.stdout.encoding or "ascii")
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def terminal_qr(text: str) -> str | None:
+    """`text` as a QR code drawn with characters, black on white whatever the terminal's
+    colours (scanners may not read an inverted code), or None without the optional
+    'segno' package. Each character shows one module wide and two high."""
+    try:
+        matrix = qr_matrix(text)
+    except InventoryError:  # segno isn't installed
+        return None
+    quiet = [False] * 4  # the quiet zone the standard asks for
+    blank = [False] * (len(matrix) + 2 * len(quiet))
+    rows = [blank] * 4 + [quiet + row + quiet for row in matrix] + [blank] * 4
+    if len(rows) % 2:
+        rows.append(blank)
+    return "\n".join(
+        "\033[30;107m" + "".join(QR_BLOCKS[pair] for pair in zip(top, bottom)) + "\033[0m"
+        for top, bottom in zip(rows[::2], rows[1::2])
+    )
+
+
+def _enable_terminal_colours() -> None:
+    """Windows consoles show colour codes as text unless asked to interpret them."""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+    mode = wintypes.DWORD()
+    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
 
 
 def cmd_token_list(inv: Inventory, args: argparse.Namespace) -> None:
