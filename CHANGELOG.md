@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/api/token` checks an API token without changing anything: it answers with
+  the token's name and whether the server can save changes, or 401 if the
+  token isn't valid. Apps can use it to test a token when it is entered.
+
 ## [1.3.0] - 2026-11-06
 
 ### Added
