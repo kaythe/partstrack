@@ -75,6 +75,36 @@ class SnapshotTest(unittest.TestCase):
                 copy.conn.execute("DELETE FROM parts")
         self.assertIsNone(read_copy_info(self.server.db_path))
 
+    def test_snapshot_leaves_out_api_tokens(self):
+        token = self.server.create_token("Phone")
+        stored = self.server.conn.execute("SELECT hash FROM api_tokens").fetchone()[0]
+        with tarfile.open(self.snapshot()) as tar:
+            data = tar.extractfile("parts.db").read()
+        self.assertNotIn(stored.encode(), data)
+        self.assertNotIn(b"Phone", data)
+        db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
+        with Inventory(db_path, read_only=True) as copy:
+            self.assertIsNone(copy.check_token(token))
+        self.assertEqual(self.server.check_token(token).name, "Phone")  # the server keeps it
+
+    def test_snapshot_leaves_out_revoked_tokens(self):
+        # Revoking leaves the row's bytes in free space of the server's database,
+        # which the backup copies page by page. (Unless SQLite was built to
+        # overwrite deleted data, as Debian's is; most others aren't.)
+        self.server.conn.execute("PRAGMA secure_delete = OFF")
+        names = [f"Old phone {i}" for i in range(40)]  # more than one page of tokens
+        for name in names:
+            self.server.create_token(name)
+        hashes = [r[0] for r in self.server.conn.execute("SELECT hash FROM api_tokens")]
+        for name in names:
+            self.server.revoke_token(name)
+        server_data = self.server.db_path.read_bytes()
+        self.assertTrue(any(h.encode() in server_data for h in hashes))  # still on the server's disk
+        with tarfile.open(self.snapshot()) as tar:
+            data = tar.extractfile("parts.db").read()
+        self.assertEqual([h for h in hashes if h.encode() in data], [])
+        self.assertFalse(b"Old phone" in data)
+
     def test_attachment_deleted_during_the_snapshot_is_left_out(self):
         attachment = self.server.get_part(self.part_id).attachments[0]
         add = tarfile.TarFile.add
@@ -233,10 +263,10 @@ class SnapshotTest(unittest.TestCase):
         db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
         with sqlite3.connect(db_path) as conn:  # as if an older partstrack had made it
             conn.execute(f"PRAGMA user_version = {len(MIGRATIONS) - 1}")
-            conn.execute("DROP TABLE stock_log")
-            conn.execute("ALTER TABLE parts DROP COLUMN min_quantity")
+            conn.execute("DROP TABLE api_tokens")  # what the last migration adds
         with Inventory(db_path, read_only=True) as copy:
-            self.assertEqual(copy.get_part(self.part_id).min_quantity, None)
+            self.assertEqual(copy.list_tokens(), [])
+            self.assertEqual(copy.get_part(self.part_id).name, "NE555")
 
     def test_damaged_marker_still_means_read_only(self):
         db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")

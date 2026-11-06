@@ -22,9 +22,35 @@ import unittest
 from pathlib import Path
 
 from partstrack.store import (
-    MAX_QUANTITY, MIGRATIONS, Inventory, InventoryError, NotFoundError, portable_filename, si_number,
-    whole_number,
+    MAX_QUANTITY, MIGRATIONS, TOKEN_PREFIX, Inventory, InventoryError, NotFoundError, is_url, portable_filename,
+    si_number, whole_number,
 )
+
+
+class InterferingConnection:
+    """Wraps an Inventory's connection and runs `interfere(conn)` just before the
+    first statement starting with `before`, to test what happens when another
+    writer changes the database between a method's reads and its write. The
+    change runs in the method's transaction, so it is undone if that fails."""
+
+    def __init__(self, inv: Inventory, before: str, interfere):
+        self.conn, self.before, self.interfere, self.done = inv.conn, before, interfere, False
+        inv.conn = self
+
+    def execute(self, sql, *args):
+        if not self.done and sql.lstrip().startswith(self.before):
+            self.done = True
+            self.interfere(self.conn)
+        return self.conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+    def __enter__(self):
+        return self.conn.__enter__()
+
+    def __exit__(self, *exc):
+        return self.conn.__exit__(*exc)
 
 
 class InventoryTest(unittest.TestCase):
@@ -199,6 +225,43 @@ class InventoryTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(portable_filename(name), expected)
 
+    def test_malformed_links_are_not_links(self):
+        part_id = self.inv.add_part("NE555")
+        for text in ("https://[", "http://[::1", "https://]x"):
+            with self.subTest(text=text):
+                self.assertFalse(is_url(text))
+                with self.assertRaisesRegex(InventoryError, "no such file"):
+                    self.inv.add_attachment(part_id, text)
+        self.assertTrue(is_url("http://[::1]:8080/ds.pdf"))
+
+    def test_attachments_only_change_through_their_part(self):
+        ne555, lm358 = self.inv.add_part("NE555"), self.inv.add_part("LM358")
+        src = self.dir / "ds.pdf"
+        src.write_bytes(b"%PDF")
+        stored = self.inv.get_attachment(self.inv.add_attachment(ne555, str(src)))
+        link_id = self.inv.add_attachment(ne555, "https://example.com/ne555.pdf")
+        with self.assertRaisesRegex(NotFoundError, f"part {lm358} has no attachment"):
+            self.inv.remove_attachment(stored.id, lm358)
+        with self.assertRaisesRegex(NotFoundError, f"part {lm358} has no attachment"):
+            self.inv.download_attachment(link_id, lm358)  # refused before any download
+        self.assertTrue(stored.path.exists())
+        self.inv.remove_attachment(stored.id, ne555)
+        self.assertFalse(stored.path.exists())
+        self.inv.remove_attachment(link_id)  # without a part, as the web interface and CLI do
+        self.assertEqual(self.inv.get_part(ne555).attachments, [])
+
+    def test_remove_attachment_never_removes_another_parts_attachment(self):
+        ne555, lm358 = self.inv.add_part("NE555"), self.inv.add_part("LM358")
+        attachment_id = self.inv.add_attachment(ne555, "https://example.com/ne555.pdf")
+
+        def reuse_id(conn):  # as if it had been removed and its id given to an LM358 attachment
+            conn.execute("UPDATE attachments SET part_id = ? WHERE id = ?", (lm358, attachment_id))
+
+        InterferingConnection(self.inv, "DELETE FROM attachments", reuse_id)
+        with self.assertRaises(NotFoundError):
+            self.inv.remove_attachment(attachment_id, ne555)
+        self.inv.get_attachment(attachment_id)  # nothing was removed
+
     def test_attachments_are_stored_under_portable_names(self):
         part_id = self.inv.add_part("ESP32")
         ids = []
@@ -243,6 +306,20 @@ class InventoryTest(unittest.TestCase):
             ["Cabinet A", "Cabinet A/Drawer 1", "Cabinet B", "Cabinet B/Drawer 1"],
         )
         self.assertEqual(len(self.inv.list_parts(location="Cabinet B")), 1)
+
+    def test_get_location(self):
+        ne555, lm358 = self.inv.add_part("NE555"), self.inv.add_part("LM358")
+        self.inv.set_stock(ne555, "Cabinet/Drawer 1", 5)
+        self.inv.set_stock(lm358, "Cabinet/Drawer 1", 2)
+        self.inv.update_location("Drawer 1", description="op-amps and timers")
+        for location in self.inv.list_locations():
+            with self.subTest(location.path):
+                self.assertEqual(self.inv.get_location(location.id), location)
+        drawer = self.inv.get_location(self.inv.list_locations()[1].id)
+        self.assertEqual((drawer.part_count, drawer.total_quantity), (2, 7))
+        for missing in (999, 10**30):
+            with self.subTest(missing), self.assertRaisesRegex(NotFoundError, "no location with id"):
+                self.inv.get_location(missing)
 
     def test_leading_slash_means_full_path(self):
         part_id = self.inv.add_part("LM317")
@@ -547,6 +624,77 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(self.inv.get_part(part_id).stock[0].quantity, MAX_QUANTITY)
 
 
+class TokenTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.inv = Inventory(Path(self.tmp.name) / "parts.db")
+        self.addCleanup(self.inv.close)
+
+    def test_create_check_list_and_revoke(self):
+        phone = self.inv.create_token(" Phone ")
+        laptop = self.inv.create_token("Laptop")
+        self.assertTrue(phone.startswith(TOKEN_PREFIX))
+        self.assertGreater(len(phone), 40)
+        self.assertNotEqual(phone, laptop)
+        self.assertEqual([(t.name, t.last_used_at) for t in self.inv.list_tokens()], [("Laptop", None), ("Phone", None)])
+
+        token = self.inv.check_token(phone)
+        self.assertEqual(token.name, "Phone")
+        self.assertIsNotNone(self.inv.list_tokens()[1].last_used_at)
+        self.assertIsNone(self.inv.check_token(phone + "x"))
+        self.assertIsNone(self.inv.check_token(""))
+        stored = self.inv.conn.execute("SELECT group_concat(hash) FROM api_tokens").fetchone()[0]
+        self.assertNotIn(phone, stored)  # only hashes are kept
+
+        self.assertEqual(self.inv.revoke_token("phone"), "Phone")
+        self.assertIsNone(self.inv.check_token(phone))
+        laptop_id = self.inv.list_tokens()[0].id
+        self.assertEqual(self.inv.revoke_token(f"#{laptop_id}"), "Laptop")
+        self.assertEqual(self.inv.list_tokens(), [])
+        for ref in ("Phone", "#999", "#" + "9" * 30, "#x"):
+            with self.subTest(ref=ref), self.assertRaises(NotFoundError):
+                self.inv.revoke_token(ref)
+
+    def test_revoke_never_deletes_a_new_token_with_a_reused_id(self):
+        self.inv.create_token("Phone")
+        self.inv.create_token("Tablet")
+        tablet_id = self.inv.list_tokens()[1].id
+
+        def replace_token(conn):  # 'Tablet' revoked, and a new token given its id
+            conn.execute("UPDATE api_tokens SET name = 'Laptop', hash = 'other' WHERE id = ?", (tablet_id,))
+
+        InterferingConnection(self.inv, "DELETE FROM api_tokens", replace_token)
+        with self.assertRaisesRegex(NotFoundError, "no token 'Tablet'"):
+            self.inv.revoke_token("Tablet")
+        self.assertEqual(len(self.inv.list_tokens()), 2)  # nothing was deleted
+
+    def test_names(self):
+        self.inv.create_token("Phone")
+        for name, message in [("PHONE", "already exists"), ("  ", "must not be empty"), ("#1", "cannot start")]:
+            with self.subTest(name=name), self.assertRaisesRegex(InventoryError, message):
+                self.inv.create_token(name)
+
+    def test_last_used_is_written_at_most_once_a_minute(self):
+        # Every API write checks its token: a write per check would take the
+        # database lock twice per request.
+        token = self.inv.create_token("Phone")
+        self.inv.check_token(token)
+        writes = self.inv.conn.total_changes
+        self.inv.check_token(token)
+        self.assertEqual(self.inv.conn.total_changes, writes)
+        self.inv.conn.execute("UPDATE api_tokens SET last_used_at = datetime('now', '-2 minutes')")
+        self.inv.conn.commit()
+        self.inv.check_token(token)
+        self.assertEqual(self.inv.conn.total_changes, writes + 2)  # the old value updated again
+
+    def test_read_only_copy_checks_without_writing(self):
+        token = self.inv.create_token("Phone")
+        with Inventory(self.inv.db_path, read_only=True) as copy:
+            self.assertEqual(copy.check_token(token).name, "Phone")
+        self.assertIsNone(self.inv.list_tokens()[0].last_used_at)
+
+
 class MigrationTest(unittest.TestCase):
     def test_v1_flat_locations_become_nested(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -593,6 +741,20 @@ class MigrationTest(unittest.TestCase):
                     [("NE555", "Bench", 1, 1, "initial"), ("NE555", "Cabinet/Drawer 4", 5, 5, "initial"),
                      ("LM358", "Bench", 7, 7, "initial")],
                 )
+
+
+    def test_v4_gets_api_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "parts.db"
+            conn = sqlite3.connect(db)
+            for migration in MIGRATIONS[:4]:
+                migration(conn) if callable(migration) else conn.executescript(migration)
+            conn.executescript("PRAGMA user_version = 4; INSERT INTO parts (id, name) VALUES (1, 'NE555');")
+            conn.close()
+            with Inventory(db) as inv:
+                self.assertEqual(inv.list_tokens(), [])
+                self.assertEqual(inv.check_token(inv.create_token("Phone")).name, "Phone")
+                self.assertEqual(inv.get_part(1).name, "NE555")
 
 
 if __name__ == "__main__":

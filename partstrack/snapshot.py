@@ -86,6 +86,16 @@ def write_snapshot(inv: Inventory, target: Path | BinaryIO) -> None:
         try:
             with copy:
                 inv.conn.backup(copy)
+            # Anyone who can reach the server may download a snapshot, so it must
+            # not contain the API tokens' hashes; secure_delete overwrites them.
+            # The backup copies pages as they are, including free space that
+            # still holds rows deleted on the server (e.g. revoked tokens) where
+            # SQLite doesn't overwrite deleted data, so VACUUM rebuilds the file
+            # from the remaining rows only.
+            copy.execute("PRAGMA secure_delete = ON")
+            with copy:
+                copy.execute("DELETE FROM api_tokens")
+            copy.execute("VACUUM")
         finally:
             copy.close()
         if isinstance(target, Path):

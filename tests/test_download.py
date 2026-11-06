@@ -27,6 +27,7 @@ from partstrack.csvio import import_csv
 from partstrack.store import Inventory, InventoryError, _CheckedRedirectHandler, downloadable_name
 
 from .fileserver import serve
+from .test_store import InterferingConnection
 
 PDF = b"%PDF-1.4 test"
 
@@ -58,6 +59,20 @@ class DownloadTest(unittest.TestCase):
         self.assertEqual((stored.id, stored.kind, stored.url, stored.source_url), (attachment_id, "datasheet", None, url))
         self.assertEqual((stored.original_name, stored.path.read_bytes()), ("ne555.pdf", PDF))
         self.assertEqual([p.name for p in self.inv.attachments_dir.iterdir()], [str(self.part_id)])  # no temp files
+
+    def test_download_never_changes_another_parts_attachment(self):
+        other = self.inv.add_part("LM358")
+        with serve({"/ds/ne555.pdf": (200, "application/pdf", PDF)}) as base:
+            attachment_id = self.inv.add_attachment(self.part_id, f"{base}/ds/ne555.pdf")
+
+            def reuse_id(conn):  # removed during the download, and its id given to an LM358 link
+                conn.execute("UPDATE attachments SET part_id = ? WHERE id = ?", (other, attachment_id))
+
+            InterferingConnection(self.inv, "UPDATE attachments SET path", reuse_id)
+            with self.assertRaisesRegex(InventoryError, "changed or removed during the download"):
+                self.inv.download_attachment(attachment_id, self.part_id)
+        self.assertIsNone(self.inv.get_attachment(attachment_id).path)  # still a link
+        self.assertEqual(list((self.inv.attachments_dir / str(self.part_id)).iterdir()), [])  # file removed
 
     def test_download_is_stored_under_a_portable_name(self):
         with serve({"/ds/ne555%201:2.pdf": (200, "application/pdf", PDF)}) as base:

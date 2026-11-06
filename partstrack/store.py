@@ -27,9 +27,11 @@ a leading "/" requires the full path from the top level.
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import ipaddress
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -57,6 +59,7 @@ LOCATION_SEPARATOR = "/"
 # have 64 bits; staying far below that means sums of quantities can't overflow.
 MAX_QUANTITY = 10**12
 NEW_PART_NOTE = "new part"  # stock history note for the initial stock of a part being added
+TOKEN_PREFIX = "pt_"  # starts every API token, so one is easy to recognise (e.g. by secret scanners)
 
 # Prefix for queries that need the full path of each location.
 LOCATION_PATHS = """
@@ -222,6 +225,17 @@ MIGRATIONS: list[str | Callable[[sqlite3.Connection], None]] = [
     FROM stock s JOIN paths p ON p.id = s.location_id
     ORDER BY s.part_id, p.path;
     """,
+    # Tokens that allow changes through the web interface's JSON API. Only a
+    # hash of each token is kept; the token itself is shown once, when created.
+    """
+    CREATE TABLE api_tokens (
+        id           INTEGER PRIMARY KEY,
+        name         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        hash         TEXT NOT NULL UNIQUE,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at TEXT
+    );
+    """,
 ]
 
 
@@ -309,6 +323,16 @@ class StockChange:
 
 
 @dataclass
+class ApiToken:
+    """A token that allows changes through the web API (the token itself is never stored)."""
+
+    id: int
+    name: str
+    created_at: str  # UTC, 'YYYY-MM-DD HH:MM:SS'
+    last_used_at: str | None
+
+
+@dataclass
 class Location:
     id: int
     name: str
@@ -333,7 +357,11 @@ def guess_attachment_kind(source: str) -> str:
 
 
 def is_url(source: str) -> bool:
-    return urlparse(source).scheme in ("http", "https", "ftp")
+    try:
+        scheme = urlparse(source).scheme
+    except ValueError:  # e.g. 'https://[', an unfinished IPv6 address
+        return False
+    return scheme in ("http", "https", "ftp")
 
 
 def downloadable_name(url: str) -> str | None:
@@ -562,6 +590,12 @@ def nocase(text: str) -> str:
     """Fold case the way SQLite's NOCASE collation does (ASCII letters only),
     so Python comparisons agree with the database's uniqueness rules."""
     return text.translate(_ASCII_LOWER)
+
+
+def _token_hash(token: str) -> str:
+    # A plain hash is enough: tokens are long random strings, not passwords
+    # people choose, so there is nothing to gain from guessing.
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def whole_number(text: str) -> int | None:
@@ -1116,32 +1150,47 @@ class Inventory:
 
     def list_locations(self) -> list[Location]:
         """Return all locations in tree order (each parent before its children)."""
+        return sorted(self._load_locations(), key=lambda l: _path_key(l.path))
+
+    def get_location(self, location_id: int) -> Location:
+        """Return one location, with its part count and total quantity."""
+        found = self._load_locations(location_id) if _fits_sqlite(location_id) else []
+        if not found:
+            raise NotFoundError(f"no location with id {location_id}")
+        return found[0]
+
+    def _load_locations(self, location_id: int | None = None) -> list[Location]:
+        """All locations, or only the one with `location_id`, in no particular order."""
         rows = self.conn.execute(
             LOCATION_PATHS
             + "SELECT l.id, l.name, lp.path, l.parent_id, l.description,"
             " COUNT(s.part_id) AS part_count, COALESCE(SUM(s.quantity), 0) AS total"
             " FROM locations l JOIN location_paths lp ON lp.id = l.id"
-            " LEFT JOIN stock s ON s.location_id = l.id GROUP BY l.id"
+            " LEFT JOIN stock s ON s.location_id = l.id"
+            + (" WHERE l.id = ?" if location_id is not None else "")
+            + " GROUP BY l.id",
+            () if location_id is None else (location_id,),
         ).fetchall()
-        locations = [
+        return [
             Location(r["id"], r["name"], r["path"], r["parent_id"], r["description"], r["part_count"], r["total"])
             for r in rows
         ]
-        return sorted(locations, key=lambda l: _path_key(l.path))
 
     def location_path(self, location: str | int) -> str:
         """Return the full path of an existing location, given by reference or id."""
         location_id = location if isinstance(location, int) else self._location_id(location, create=False)
-        row = self.conn.execute(
-            LOCATION_PATHS + "SELECT path FROM location_paths WHERE id = ?", (location_id,)
-        ).fetchone()
+        row = None
+        if _fits_sqlite(location_id):
+            row = self.conn.execute(
+                LOCATION_PATHS + "SELECT path FROM location_paths WHERE id = ?", (location_id,)
+            ).fetchone()
         if row is None:
             raise NotFoundError(f"no location with id {location_id}")
         return row["path"]
 
     def update_location(
         self,
-        ref: str,
+        ref: str | int,
         *,
         new_name: str | None = None,
         description: str | None = None,
@@ -1149,14 +1198,15 @@ class Inventory:
         top_level: bool = False,
     ) -> None:
         """Rename a location, change its description, or move it (with
-        everything in it) into `parent` (created if needed) or to the top level."""
+        everything in it) into `parent` (created if needed) or to the top level.
+        `ref` is a reference or an id; front ends that know the id should pass it."""
         if parent is not None and top_level:
             raise InventoryError("a location cannot both have a parent and be at the top level")
         if new_name is not None:
             new_name = self._check_location_name(new_name)
         try:
             with self.transaction():
-                location_id = self._location_id(ref, create=False)
+                location_id = self._existing_location_id(ref)
                 if parent is not None or top_level:
                     parent_id = None if top_level else self._location_id(parent, create=True)
                     if parent_id in self._subtree_ids(location_id):
@@ -1171,19 +1221,24 @@ class Inventory:
         except sqlite3.IntegrityError:
             raise InventoryError("there already is a location with that name in that place") from None
 
-    def delete_location(self, ref: str) -> None:
-        location_id = self._location_id(ref, create=False)
-        count = self.conn.execute(
-            "SELECT COUNT(*) FROM stock WHERE location_id = ?", (location_id,)
-        ).fetchone()[0]
-        if count:
-            raise InventoryError(f"location '{ref}' still holds {count} part(s); move them first")
-        children = self.conn.execute(
-            "SELECT COUNT(*) FROM locations WHERE parent_id = ?", (location_id,)
-        ).fetchone()[0]
-        if children:
-            raise InventoryError(f"location '{ref}' still contains {children} sublocation(s)")
-        with self.transaction():
+    def delete_location(self, ref: str | int) -> None:
+        """Delete an empty location, given by reference or id."""
+        with self.transaction():  # check and delete together, so nothing is added in between
+            location_id = self._existing_location_id(ref)
+
+            def name() -> str:  # only looked up for an error message
+                return ref if isinstance(ref, str) else self.location_path(location_id)
+
+            count = self.conn.execute(
+                "SELECT COUNT(*) FROM stock WHERE location_id = ?", (location_id,)
+            ).fetchone()[0]
+            if count:
+                raise InventoryError(f"location '{name()}' still holds {count} part(s); move them first")
+            children = self.conn.execute(
+                "SELECT COUNT(*) FROM locations WHERE parent_id = ?", (location_id,)
+            ).fetchone()[0]
+            if children:
+                raise InventoryError(f"location '{name()}' still contains {children} sublocation(s)")
             self.conn.execute("DELETE FROM locations WHERE id = ?", (location_id,))
 
     # -- stock ---------------------------------------------------------------
@@ -1339,14 +1394,17 @@ class Inventory:
             self._touch(part_id)
         return cur.lastrowid
 
-    def remove_attachment(self, attachment_id: int) -> None:
-        row = None
-        if _fits_sqlite(attachment_id):
-            row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
-        if row is None:
-            raise NotFoundError(f"no attachment with id {attachment_id}")
+    def remove_attachment(self, attachment_id: int, part_id: int | None = None) -> None:
+        """Remove an attachment (and its stored file). With `part_id`, only if it
+        belongs to that part; ids of removed attachments can be reused, so a
+        caller that knows the part should pass it."""
         with self.transaction():
-            self.conn.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+            row = self._find_attachment(attachment_id, part_id)
+            # Only the row just read: ids can be reused, e.g. by another part's attachment.
+            if not self.conn.execute(
+                "DELETE FROM attachments WHERE id = ? AND part_id = ?", (attachment_id, row["part_id"])
+            ).rowcount:
+                raise NotFoundError(f"no attachment with id {attachment_id}")
             self._touch(row["part_id"])
             if row["path"]:
                 stored = self.attachments_dir / row["path"]
@@ -1371,14 +1429,15 @@ class Inventory:
         attachments = [self._attachment_from_row(r) for r in self.conn.execute(sql + " ORDER BY part_id, id", params)]
         return [a for a in attachments if downloadable_name(a.url)]
 
-    def download_attachment(self, attachment_id: int) -> Attachment:
+    def download_attachment(self, attachment_id: int, part_id: int | None = None) -> Attachment:
         """Replace a link that points to a single file with a stored copy of
-        that file. The link is kept as the attachment's `source_url`.
+        that file. The link is kept as the attachment's `source_url`. With
+        `part_id`, only if the attachment belongs to that part.
 
         Call this outside of transaction(): downloading can take a while, and
         an open transaction would block other writers meanwhile.
         """
-        attachment = self.get_attachment(attachment_id)
+        attachment = self._attachment_from_row(self._find_attachment(attachment_id, part_id))
         if attachment.url is None:
             raise InventoryError("this attachment is already a stored file")
         name = downloadable_name(attachment.url)
@@ -1397,9 +1456,9 @@ class Inventory:
                 downloaded.replace(dest)
                 updated = self.conn.execute(
                     "UPDATE attachments SET path = ?, url = NULL, source_url = ?, original_name = ?"
-                    " WHERE id = ? AND url = ?",
+                    " WHERE id = ? AND part_id = ? AND url = ?",  # not a new attachment with this id
                     (dest.relative_to(self.attachments_dir).as_posix(), attachment.url, name,
-                     attachment_id, attachment.url),
+                     attachment_id, attachment.part_id, attachment.url),
                 ).rowcount
                 if not updated:
                     raise InventoryError("the attachment was changed or removed during the download")
@@ -1422,12 +1481,76 @@ class Inventory:
         return results
 
     def get_attachment(self, attachment_id: int) -> Attachment:
+        return self._attachment_from_row(self._find_attachment(attachment_id))
+
+    def _find_attachment(self, attachment_id: int, part_id: int | None = None) -> sqlite3.Row:
         row = None
         if _fits_sqlite(attachment_id):
             row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        if row is not None and part_id is not None and row["part_id"] != part_id:
+            raise NotFoundError(f"part {part_id} has no attachment with id {attachment_id}")
         if row is None:
             raise NotFoundError(f"no attachment with id {attachment_id}")
-        return self._attachment_from_row(row)
+        return row
+
+    # -- API tokens ----------------------------------------------------------
+
+    def create_token(self, name: str) -> str:
+        """Add a token that allows changes through the web API and return it.
+        Only a hash is stored, so this is the only time the token can be seen."""
+        name = name.strip()
+        if not name:
+            raise InventoryError("token name must not be empty")
+        if name.startswith("#"):
+            raise InventoryError("token names cannot start with '#', which marks token ids")
+        token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+        try:
+            with self.transaction():
+                self.conn.execute("INSERT INTO api_tokens (name, hash) VALUES (?, ?)", (name, _token_hash(token)))
+        except sqlite3.IntegrityError:
+            raise InventoryError(f"a token named '{name}' already exists") from None
+        return token
+
+    def list_tokens(self) -> list[ApiToken]:
+        rows = self.conn.execute(
+            "SELECT id, name, created_at, last_used_at FROM api_tokens ORDER BY name"
+        ).fetchall()
+        return [ApiToken(r["id"], r["name"], r["created_at"], r["last_used_at"]) for r in rows]
+
+    def revoke_token(self, ref: str) -> str:
+        """Delete a token, given by name or as '#id'; returns its name."""
+        ref = ref.strip()
+        number = whole_number(ref.removeprefix("#")) if ref.startswith("#") else None
+        with self.transaction():
+            row = self.conn.execute("SELECT id, name, hash FROM api_tokens WHERE name = ?", (ref,)).fetchone()
+            if row is None and number is not None and _fits_sqlite(number):
+                row = self.conn.execute("SELECT id, name, hash FROM api_tokens WHERE id = ?", (number,)).fetchone()
+            # Ids of deleted tokens can be reused, so the hash makes sure that
+            # exactly the token looked up is deleted, not a new one with its id.
+            deleted = row is not None and self.conn.execute(
+                "DELETE FROM api_tokens WHERE id = ? AND hash = ?", (row["id"], row["hash"])
+            ).rowcount
+            if not deleted:
+                raise NotFoundError(f"no token '{ref}'")
+        return row["name"]
+
+    def check_token(self, token: str) -> ApiToken | None:
+        """The API token `token` is, or None if it isn't one (e.g. revoked).
+        Notes the time it was used, except in a read-only copy. That time is
+        kept to the minute, so most checks don't write: every API change
+        checks its token, and a write here would take the database lock twice."""
+        row = self.conn.execute(
+            "SELECT id, name, created_at, last_used_at,"
+            " last_used_at IS NULL OR last_used_at < datetime('now', '-1 minute') AS stale"
+            " FROM api_tokens WHERE hash = ?",
+            (_token_hash(token),),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["stale"] and not self.read_only:
+            with self.transaction():
+                self.conn.execute("UPDATE api_tokens SET last_used_at = datetime('now') WHERE id = ?", (row["id"],))
+        return ApiToken(row["id"], row["name"], row["created_at"], row["last_used_at"])
 
     # -- helpers -------------------------------------------------------------
 
@@ -1479,6 +1602,16 @@ class Inventory:
             paths = ", ".join(sorted(r["path"] for r in suffix_matches))
             raise InventoryError(f"'{ref}' could be any of: {paths}; give more of the path")
         return suffix_matches[0]["id"] if suffix_matches else None
+
+    def _existing_location_id(self, location: str | int) -> int:
+        """The id of an existing location, given by reference or id."""
+        if isinstance(location, str):
+            return self._location_id(location, create=False)
+        if not _fits_sqlite(location) or not self.conn.execute(
+            "SELECT 1 FROM locations WHERE id = ?", (location,)
+        ).fetchone():
+            raise NotFoundError(f"no location with id {location}")
+        return location
 
     def _location_id(self, ref: str, *, create: bool) -> int:
         location_id = self._find_location(ref)

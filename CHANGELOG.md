@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-06
+
+### Added
+
+- The JSON API can change the inventory: add, change and delete parts, set,
+  add, take and move stock, and add, change and delete locations. Changes
+  need an API token, created with `partstrack token add NAME` (and listed and
+  revoked with `token list` and `token rm`), sent as
+  `Authorization: Bearer <token>`. Reading still needs no token.
+- The JSON API can add attachments to a part, as uploaded files or as links
+  (downloaded like in the web interface, unless asked not to), download a
+  link's file later, and remove attachments.
+- `/api/locations/<id>` shows one location, and locations in the API have an
+  `api_url`.
+
+### Changed
+
+- Snapshots (`/api/snapshot`) leave out the API tokens.
+
+### Fixed
+
+- The JSON API answers unexpected server errors (such as a database that
+  stays locked by another change) with a JSON error and status 500, like its
+  other errors, instead of an HTML page.
+- A malformed link such as `https://[` no longer causes a server error in the
+  web interface or a traceback in the CLI; it is refused like any other text
+  that isn't a link.
+
 ## [1.2.1] - 2026-11-05
 
 ### Security
@@ -221,7 +249,8 @@ First release.
 - Light/dark theme switch in the web interface, with an "Auto" setting that
   follows the device.
 
-[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/kaythe/partstrack/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/kaythe/partstrack/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/kaythe/partstrack/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/kaythe/partstrack/compare/v1.1.0...v1.1.1

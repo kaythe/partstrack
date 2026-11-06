@@ -53,6 +53,21 @@ class CommandTest(unittest.TestCase):
             self.assertEqual(main(["--db", self.db, *args]), 0)
         return out.getvalue()
 
+    def test_tokens(self):
+        self.assertIn("No tokens yet.", self.run_cli("token", "list"))
+        output = self.run_cli("token", "add", "Pixel 8")
+        token = next(word for word in output.split() if word.startswith("pt_"))
+        with Inventory(self.db) as inv:
+            self.assertEqual(inv.check_token(token).name, "Pixel 8")
+        listing = self.run_cli("token", "ls")
+        self.assertIn("Pixel 8", listing)
+        self.assertNotIn(token, listing)
+        self.assertIn("Revoked token 'Pixel 8'", self.run_cli("token", "rm", "pixel 8"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(main(["--db", self.db, "token", "rm", "Pixel 8"]), 1)
+        self.assertIn("no token 'Pixel 8'", err.getvalue())
+
     def test_minimum_low_stock_and_history(self):
         self.run_cli("add", "NE555", "-q", "20", "-l", "Drawer 3", "--min", "10")
         self.run_cli("add", "LM358", "-q", "1", "-l", "Bench")
@@ -117,6 +132,10 @@ class CommandTest(unittest.TestCase):
         self.assertTrue(err.getvalue().startswith("error: "), err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
         return err.getvalue()
+
+    def test_malformed_link_is_reported_without_traceback(self):
+        self.run_cli("add", "NE555")
+        self.assertIn("no such file: https://[", self.run_failing("attach", "NE555", "https://["))
 
     def test_file_and_database_errors_are_reported_without_traceback(self):
         self.run_cli("add", "NE555")

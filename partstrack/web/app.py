@@ -163,7 +163,12 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 @bp.before_app_request
 def _refuse_cross_site_requests():
-    if request.method in SAFE_METHODS or _from_this_site():
+    # Changes through the API need a token in a header, which other websites
+    # can't make a browser send (see api.py), and the API checks it itself.
+    # A request that matched no route (or not with this method) can't change
+    # anything, and gets its usual 404 or 405 (JSON under /api).
+    if (request.method in SAFE_METHODS or request.blueprint == "api" or request.routing_exception is not None
+            or _from_this_site()):
         return None
     message = ("This change was sent from another website, so it was refused. "
                "Make changes from partstrack's own pages.")
@@ -263,7 +268,9 @@ def _safe_filename(filename: str) -> str:
     return name or "upload"
 
 
-def _save_uploads(inv: Inventory, part_id: int, uploads: list[FileStorage], kind: str | None) -> None:
+def _save_uploads(inv: Inventory, part_id: int, uploads: list[FileStorage], kind: str | None) -> list[int]:
+    """Attach uploaded files; returns the new attachments' ids."""
+    attachment_ids = []
     with tempfile.TemporaryDirectory() as tmp:
         for upload in uploads:
             if not upload or not upload.filename:
@@ -271,7 +278,8 @@ def _save_uploads(inv: Inventory, part_id: int, uploads: list[FileStorage], kind
             name = _safe_filename(upload.filename)
             path = Path(tmp) / portable_filename(name)  # the server may run on Windows
             upload.save(path)
-            inv.add_attachment(part_id, str(path), kind, name=name)
+            attachment_ids.append(inv.add_attachment(part_id, str(path), kind, name=name))
+    return attachment_ids
 
 
 def _save_links(inv: Inventory, part_id: int, text: str, kind: str | None) -> list[int]:
