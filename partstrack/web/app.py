@@ -165,7 +165,10 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 def _refuse_cross_site_requests():
     # Changes through the API need a token in a header, which other websites
     # can't make a browser send (see api.py), and the API checks it itself.
-    if request.method in SAFE_METHODS or request.blueprint == "api" or _from_this_site():
+    # A request that matched no route (or not with this method) can't change
+    # anything, and gets its usual 404 or 405 (JSON under /api).
+    if (request.method in SAFE_METHODS or request.blueprint == "api" or request.routing_exception is not None
+            or _from_this_site()):
         return None
     message = ("This change was sent from another website, so it was refused. "
                "Make changes from partstrack's own pages.")

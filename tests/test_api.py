@@ -206,6 +206,14 @@ class ApiChangeTest(unittest.TestCase):
         response = self.client.post("/parts/new", data={"name": "X"}, headers={"Sec-Fetch-Site": "cross-site"})
         self.assertEqual(response.status_code, 403)
 
+    def test_unknown_urls_and_methods_are_json_from_any_site(self):
+        # No route matched, so nothing can change: the API's JSON 404 and 405
+        # come before the pages' cross-site check.
+        cross_site = {"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}
+        self.assertIn("no such API endpoint", self.send("POST", "/api/nope", {}, 404, **cross_site)["error"])
+        self.assertIn("not allowed", self.send("PUT", f"/api/parts/{self.ne555}", {}, 405, **cross_site)["error"])
+        self.assertIn("not allowed", self.send("POST", "/api/tags", {}, 405, token=False, **cross_site)["error"])
+
     def test_add_part(self):
         response = self.client.post("/api/parts", headers={"Authorization": f"Bearer {self.token}"}, json={
             "name": " LM358 ", "description": "dual op-amp", "package": "SOIC-8", "tags": ["opamp", "dual"],
