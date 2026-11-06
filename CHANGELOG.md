@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The JSON API can change the inventory: add, change and delete parts, set,
+  add, take and move stock, and add, change and delete locations. Changes
+  need an API token, created with `partstrack token add NAME` (and listed and
+  revoked with `token list` and `token rm`), sent as
+  `Authorization: Bearer <token>`. Reading still needs no token.
+- `/api/locations/<id>` shows one location, and locations in the API have an
+  `api_url`.
+
+### Changed
+
+- Snapshots (`/api/snapshot`) leave out the API tokens.
+
 ## [1.2.1] - 2026-11-05
 
 ### Security

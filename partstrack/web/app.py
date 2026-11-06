@@ -163,7 +163,9 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 @bp.before_app_request
 def _refuse_cross_site_requests():
-    if request.method in SAFE_METHODS or _from_this_site():
+    # Changes through the API need a token in a header, which other websites
+    # can't make a browser send (see api.py), and the API checks it itself.
+    if request.method in SAFE_METHODS or request.blueprint == "api" or _from_this_site():
         return None
     message = ("This change was sent from another website, so it was refused. "
                "Make changes from partstrack's own pages.")

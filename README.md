@@ -238,7 +238,7 @@ WantedBy=multi-user.target
 ## JSON API
 
 The web interface also answers in JSON under `/api`, for scripts and other
-programs. It is read-only: nothing can be changed through it.
+programs, such as an app on your phone. Reading needs nothing:
 
 ```sh
 curl http://parts.lan:8080/api                        # the endpoints and the version
@@ -246,6 +246,7 @@ curl 'http://parts.lan:8080/api/parts?q=smd&low=1'    # filters: q, tag, locatio
 curl 'http://parts.lan:8080/api/parts?q=resistance%3E%3D10k'  # resistance>=10k, URL-encoded
 curl http://parts.lan:8080/api/parts/12
 curl http://parts.lan:8080/api/locations
+curl http://parts.lan:8080/api/locations/3
 curl http://parts.lan:8080/api/tags
 curl http://parts.lan:8080/api/categories
 curl 'http://parts.lan:8080/api/history?part=12&limit=0'  # stock changes; limit 0 for all
@@ -253,8 +254,48 @@ curl 'http://parts.lan:8080/api/history?part=12&limit=0'  # stock changes; limit
 
 Parts include their stock, tags, attributes, minimum quantity and whether they
 are low on stock. Attachments are links to the web interface. Errors come back
-as `{"error": "..."}` with a 4xx status. Like the web interface, the API has no
-login, so anyone who can reach the server can read the inventory.
+as `{"error": "..."}` with a 4xx status.
+
+Changes need an **API token**. Create one per device or program on the
+server; it is shown only once (the database keeps only a hash of it), so copy
+it right away:
+
+```sh
+partstrack token add "Pixel 8"   # prints the token, pt_…
+partstrack token list            # names, and when each was last used
+partstrack token rm "Pixel 8"    # revoke it, e.g. for a lost phone
+```
+
+Send it in the `Authorization` header. Bodies are JSON objects; locations are
+full paths as the API returns them (`Cabinet/Drawer 3`), and missing ones are
+created where stock is put:
+
+```sh
+TOKEN=pt_...
+AUTH="Authorization: Bearer $TOKEN"
+curl -H "$AUTH" --json '{"name": "NE555", "package": "DIP-8", "tags": ["timer"],
+  "stock": [{"location": "Cabinet/Drawer 3", "quantity": 20}]}' http://parts.lan:8080/api/parts
+curl -H "$AUTH" -X PATCH --json '{"min_quantity": 10}' http://parts.lan:8080/api/parts/12
+curl -H "$AUTH" --json '{"location": "Cabinet/Drawer 3", "delta": -2, "note": "amp board"}' \
+  http://parts.lan:8080/api/parts/12/stock          # or "quantity" for the new amount
+curl -H "$AUTH" --json '{"from": "Cabinet/Drawer 3", "to": "Bench", "quantity": 5}' \
+  http://parts.lan:8080/api/parts/12/move           # without "from", all stock moves
+curl -H "$AUTH" -X DELETE http://parts.lan:8080/api/parts/12
+curl -H "$AUTH" --json '{"path": "Shelf/Box 1"}' http://parts.lan:8080/api/locations
+curl -H "$AUTH" -X PATCH --json '{"name": "Box A", "parent": null}' http://parts.lan:8080/api/locations/3
+curl -H "$AUTH" -X DELETE http://parts.lan:8080/api/locations/3
+```
+
+`/api` lists all fields each change accepts. Unknown fields are refused, so a
+typo doesn't go unnoticed, and each request is saved completely or not at all.
+Changes answer with the changed part or location. Snapshots (`/api/snapshot`)
+leave out the tokens.
+
+The token only guards changes through the API: the web interface itself still
+has no login, and anyone who can reach it can read the inventory and change it
+there. To use partstrack from outside your home network, reach it through a
+VPN (e.g. WireGuard) rather than exposing the port to the internet. Tokens are
+sent in plain text over HTTP, so they are only as private as the network.
 
 ## Labels with QR codes
 
@@ -402,7 +443,7 @@ files keep the right owner:
   of a server's inventory.
 - `partstrack/cli.py` is the command-line front end, a thin layer over `Inventory`.
 - `partstrack/web/` holds the web front end: a Flask app in `app.py`, the
-  read-only JSON API in `api.py`, plus Jinja templates and a stylesheet.
+  JSON API in `api.py`, plus Jinja templates and a stylesheet.
 - `partstrack/desktop/app.py` is the desktop front end (PySide6).
 - Schema changes go into `MIGRATIONS` in `store.py`. They are applied
   automatically using SQLite's `user_version`.

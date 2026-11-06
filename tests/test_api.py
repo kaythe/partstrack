@@ -116,20 +116,218 @@ class ApiTest(unittest.TestCase):
         response.close()
         self.assertEqual(list(temp.iterdir()), [])  # nothing left behind
 
-    def test_errors_are_json_and_writes_are_refused(self):
+    def test_errors_are_json(self):
         self.assertIn("no such API endpoint", self.get("/api/nope", 404)["error"])
-        response = self.client.post("/api/parts", data={"name": "X"})
-        self.assertEqual((response.status_code, response.get_json()["error"]),
-                         (405, "the API is read-only; only GET is allowed"))
-        response = self.client.delete(f"/api/parts/{self.ne555}")
+        response = self.client.put(f"/api/parts/{self.ne555}", json={})
         self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.get_json()["error"], "PUT is not allowed here; allowed: DELETE, GET, HEAD, OPTIONS, PATCH")
+        self.assertEqual(response.headers["Allow"], "DELETE, GET, HEAD, OPTIONS, PATCH")
         self.assertEqual(self.client.get("/nope").content_type, "text/html; charset=utf-8")  # not under /api
 
     def test_numbers_beyond_the_database_range(self):
         huge = "9" * 30
         self.get(f"/api/parts/{huge}", 404)
+        self.get(f"/api/locations/{huge}", 404)
         self.get(f"/api/history?part={huge}", 404)
         self.assertEqual(len(self.get(f"/api/history?limit={huge}", 200)), 2)
+
+
+
+@unittest.skipIf(create_app is None, "needs the 'web' extra (Flask)")
+class ApiChangeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = Path(self.tmp.name) / "parts.db"
+        with Inventory(self.db) as inv:
+            self.token = inv.create_token("Phone")
+            self.ne555 = inv.add_part("NE555", package="DIP-8")
+            inv.set_stock(self.ne555, "Cabinet/Drawer 1", 5)
+            inv.set_stock(self.ne555, "Bench/Drawer 1", 2)  # 'Drawer 1' alone is ambiguous
+        self.client = create_app(self.db).test_client()
+
+    def send(self, method, url, body=None, status=200, token=True, **headers):
+        if token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        response = self.client.open(url, method=method, json=body, headers=headers)
+        self.assertEqual(response.status_code, status, response.get_data(as_text=True))
+        self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+        if status == 204:
+            self.assertEqual(response.get_data(), b"")
+            return None
+        self.assertEqual(response.content_type, "application/json")
+        return response.get_json()
+
+    def inventory(self):
+        inv = Inventory(self.db)
+        self.addCleanup(inv.close)
+        return inv
+
+    def stock(self, part):
+        return {s["location"]: s["quantity"] for s in part["stock"]}
+
+    def test_changes_need_a_valid_token(self):
+        with Inventory(self.db) as inv:
+            revoked = inv.create_token("Old phone")
+            inv.revoke_token("Old phone")
+        for headers in [{}, {"Authorization": "Bearer "}, {"Authorization": f"Basic {self.token}"},
+                        {"Authorization": "Bearer pt_wrong"}, {"Authorization": f"Bearer {revoked}"}]:
+            with self.subTest(headers=headers):
+                response = self.client.post("/api/parts", json={"name": "LM358"}, headers=headers)
+                self.assertEqual(response.status_code, 401)
+                self.assertIn("error", response.get_json())
+                self.assertTrue(response.headers["WWW-Authenticate"].startswith('Bearer realm="partstrack"'))
+                for method, url in [("PATCH", f"/api/parts/{self.ne555}"), ("DELETE", f"/api/parts/{self.ne555}"),
+                                    ("POST", "/api/locations")]:
+                    self.assertEqual(self.client.open(url, method=method, json={}, headers=headers).status_code, 401)
+        self.assertEqual([p.name for p in self.inventory().list_parts()], ["NE555"])  # nothing changed
+        self.assertEqual(len(self.inventory().list_locations()), 4)
+
+    def test_token_requests_need_no_same_site_headers(self):
+        # A phone app sends none of them; a browser page here would send same-origin.
+        # Either way the token decides, and a cross-site page couldn't add it.
+        self.send("POST", f"/api/parts/{self.ne555}/stock", {"location": "Cabinet/Drawer 1", "delta": 1},
+                  **{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"})
+        self.assertIsNotNone(self.inventory().list_tokens()[0].last_used_at)
+        # The pages' forms are still protected.
+        response = self.client.post("/parts/new", data={"name": "X"}, headers={"Sec-Fetch-Site": "cross-site"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_add_part(self):
+        response = self.client.post("/api/parts", headers={"Authorization": f"Bearer {self.token}"}, json={
+            "name": " LM358 ", "description": "dual op-amp", "package": "SOIC-8", "tags": ["opamp", "dual"],
+            "attributes": {"channels": "2"}, "min_quantity": 5,
+            "stock": [{"location": "Cabinet/Drawer 2", "quantity": 10}, {"location": "/Shelf", "quantity": 3}],
+        })
+        self.assertEqual(response.status_code, 201)
+        part = response.get_json()
+        self.assertEqual(response.headers["Location"], part["api_url"])
+        self.assertEqual((part["name"], part["description"], part["package"], part["min_quantity"]),
+                         ("LM358", "dual op-amp", "SOIC-8", 5))
+        self.assertEqual(sorted(part["tags"]), ["dual", "opamp"])
+        self.assertEqual(part["attributes"], {"channels": "2"})
+        self.assertEqual(self.stock(part), {"Cabinet/Drawer 2": 10, "Shelf": 3})
+        history = self.inventory().stock_history(part["id"])
+        self.assertEqual({c.note for c in history}, {"new part"})
+        minimal = self.send("POST", "/api/parts", {"name": "R1"}, 201)
+        self.assertEqual((minimal["stock"], minimal["tags"], minimal["min_quantity"]), ([], [], None))
+
+    def test_add_part_saves_all_or_nothing(self):
+        error = self.send("POST", "/api/parts", {
+            "name": "LM358", "tags": ["opamp"],
+            "stock": [{"location": "Shelf", "quantity": 3}, {"location": "Bin", "quantity": -1}],
+        }, 400)["error"]
+        self.assertIn("negative", error)
+        inv = self.inventory()
+        self.assertIsNone(inv.part_id_by_name("LM358"))
+        self.assertNotIn("Shelf", [l.path for l in inv.list_locations()])
+        self.assertEqual(inv.list_tags(), [])
+        self.assertIn("already exists", self.send("POST", "/api/parts", {"name": "ne555"}, 400)["error"])
+
+    def test_bad_bodies(self):
+        url = "/api/parts"
+        for body, message in [
+            (None, "must be a JSON object"),
+            ([], "must be a JSON object"),
+            ({}, "missing field(s): name"),
+            ({"name": "X", "colour": "red", "Name": "Y"}, "unknown field(s): Name, colour"),
+            ({"name": 5}, "'name' must be a string"),
+            ({"name": "X", "tags": "a,b"}, "'tags' must be a list of strings"),
+            ({"name": "X", "tags": [1]}, "'tags' must be a list of strings"),
+            ({"name": "X", "attributes": {"a": 1}}, "'attributes' must be an object whose values are strings"),
+            ({"name": "X", "min_quantity": "5"}, "'min_quantity' must be a whole number or null"),
+            ({"name": "X", "min_quantity": 2.5}, "'min_quantity' must be a whole number or null"),
+            ({"name": "X", "stock": {"Shelf": 1}}, "'stock' must be a list of objects"),
+            ({"name": "X", "stock": [{"location": "Shelf"}]}, "missing field(s) in 'stock': quantity"),
+            ({"name": "X", "stock": [{"location": "Shelf", "quantity": 1, "x": 0}]}, "unknown field(s) in 'stock': x"),
+            ({"name": "X", "stock": [{"location": "Shelf", "quantity": True}]}, "'stock.quantity' must be a whole number"),
+            ({"name": "X", "stock": [{"location": "", "quantity": 1}]}, "location must not be empty"),
+        ]:
+            with self.subTest(body=body):
+                self.assertIn(message, self.send("POST", url, body, 400)["error"])
+        response = self.client.post(url, data='{"name": "X"}', headers={"Authorization": f"Bearer {self.token}"})
+        self.assertIn("Content-Type: application/json", response.get_json()["error"])  # not sent as JSON
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(self.inventory().part_id_by_name("X"))
+
+    def test_update_part(self):
+        url = f"/api/parts/{self.ne555}"
+        self.send("PATCH", url, {"tags": ["timer", "ic"], "attributes": {"vcc": "5V", "pins": "8"}, "min_quantity": 3})
+        part = self.send("PATCH", url, {"description": "timer", "tags": ["timer"], "attributes": {"vcc": "15V"}})
+        self.assertEqual((part["name"], part["package"], part["description"]), ("NE555", "DIP-8", "timer"))
+        self.assertEqual((part["tags"], part["attributes"], part["min_quantity"]), (["timer"], {"vcc": "15V"}, 3))
+        part = self.send("PATCH", url, {"name": "NE555P", "min_quantity": None})
+        self.assertEqual((part["name"], part["min_quantity"], part["tags"]), ("NE555P", None, ["timer"]))
+        self.assertEqual(self.send("PATCH", url, {})["name"], "NE555P")
+        self.assertIn("unknown field(s): stock", self.send("PATCH", url, {"stock": []}, 400)["error"])
+        self.assertIn("must not be empty", self.send("PATCH", url, {"name": " "}, 400)["error"])
+        self.assertEqual(self.send("PATCH", "/api/parts/999", {"notes": "x"}, 404), {"error": "no part with id 999"})
+
+    def test_delete_part(self):
+        self.send("DELETE", f"/api/parts/{self.ne555}", status=204)
+        self.assertEqual(self.inventory().list_parts(), [])
+        self.send("DELETE", f"/api/parts/{self.ne555}", status=404)
+
+    def test_stock(self):
+        url = f"/api/parts/{self.ne555}/stock"
+        part = self.send("POST", url, {"location": "Cabinet/Drawer 1", "delta": -2, "note": "amp board"})
+        self.assertEqual(self.stock(part), {"Cabinet/Drawer 1": 3, "Bench/Drawer 1": 2})
+        part = self.send("POST", url, {"location": "/Bench/Drawer 1", "quantity": 7})
+        self.assertEqual(self.stock(part)["Bench/Drawer 1"], 7)
+        part = self.send("POST", url, {"location": "Shelf/Box", "delta": 4})  # created
+        self.assertEqual(self.stock(part)["Shelf/Box"], 4)
+        # A path is always the full path: 'Drawer 1' is a new top-level location, not a guess.
+        part = self.send("POST", url, {"location": "Drawer 1", "quantity": 1})
+        self.assertEqual(self.stock(part)["Drawer 1"], 1)
+        self.assertIn("only 3", self.send("POST", url, {"location": "Cabinet/Drawer 1", "delta": -9}, 400)["error"])
+        for body in [{"location": "Shelf"}, {"location": "Shelf", "quantity": 1, "delta": 1}]:
+            self.assertIn("either 'quantity'", self.send("POST", url, body, 400)["error"])
+        history = self.send("GET", f"/api/history?part={self.ne555}")
+        self.assertEqual(history[-3]["note"], "amp board")
+        self.assertEqual(history[-3]["delta"], -2)
+
+    def test_move(self):
+        url = f"/api/parts/{self.ne555}/move"
+        part = self.send("POST", url, {"from": "Cabinet/Drawer 1", "to": "Shelf", "quantity": 2})
+        self.assertEqual(self.stock(part), {"Cabinet/Drawer 1": 3, "Shelf": 2, "Bench/Drawer 1": 2})
+        part = self.send("POST", url, {"from": "Cabinet/Drawer 1", "to": "Shelf", "note": "tidying"})
+        self.assertEqual(self.stock(part), {"Shelf": 5, "Bench/Drawer 1": 2})
+        part = self.send("POST", url, {"to": "Bin"})
+        self.assertEqual(self.stock(part), {"Bin": 7})
+        self.assertIn("needs 'from'", self.send("POST", url, {"to": "Shelf", "quantity": 1}, 400)["error"])
+        self.assertIn("missing field(s): to", self.send("POST", url, {"from": "Bin"}, 400)["error"])
+        self.assertIn("no location", self.send("POST", url, {"from": "Nowhere", "to": "Bin"}, 404)["error"])
+
+    def test_locations(self):
+        response = self.client.post("/api/locations", json={"path": "Shelf/Box 1", "description": "resistors"},
+                                    headers={"Authorization": f"Bearer {self.token}"})
+        self.assertEqual(response.status_code, 201)
+        box = response.get_json()
+        self.assertEqual((box["path"], box["parent"], box["description"]), ("Shelf/Box 1", "Shelf", "resistors"))
+        self.assertEqual(response.headers["Location"], box["api_url"])
+        self.assertEqual(self.send("GET", box["api_url"]), box)
+        self.assertIn("already exists", self.send("POST", "/api/locations", {"path": "shelf/box 1"}, 400)["error"])
+
+        url = f"/api/locations/{box['id']}"
+        box = self.send("PATCH", url, {"name": "Box A", "parent": "Cabinet", "description": ""})
+        self.assertEqual((box["path"], box["description"]), ("Cabinet/Box A", ""))
+        self.assertEqual(self.send("PATCH", url, {"parent": None})["path"], "Box A")
+        self.assertIn("inside itself", self.send("PATCH", f"/api/locations/{self.location_id('Cabinet')}",
+                                                 {"parent": "Cabinet/Drawer 1"}, 400)["error"])
+        self.send("DELETE", url, status=204)
+        self.send("GET", url, status=404)
+        self.send("PATCH", url, {"name": "x"}, 404)
+        drawer = self.location_id("Cabinet/Drawer 1")
+        self.assertIn("still holds", self.send("DELETE", f"/api/locations/{drawer}", status=400)["error"])
+
+    def location_id(self, path):
+        return next(l.id for l in self.inventory().list_locations() if l.path == path)
+
+    def test_read_only_copy(self):
+        (Path(self.tmp.name) / "partstrack-copy.json").write_text('{"kind": "server", "source": "http://a/"}')
+        error = self.send("POST", "/api/parts", {"name": "LM358"}, 409)["error"]
+        self.assertIn("read-only copy", error)
+        self.send("POST", "/api/parts", {"name": "LM358"}, 401, token=False)  # no token: still 401
 
 
 if __name__ == "__main__":

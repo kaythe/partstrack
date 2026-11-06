@@ -75,6 +75,18 @@ class SnapshotTest(unittest.TestCase):
                 copy.conn.execute("DELETE FROM parts")
         self.assertIsNone(read_copy_info(self.server.db_path))
 
+    def test_snapshot_leaves_out_api_tokens(self):
+        token = self.server.create_token("Phone")
+        stored = self.server.conn.execute("SELECT hash FROM api_tokens").fetchone()[0]
+        with tarfile.open(self.snapshot()) as tar:
+            data = tar.extractfile("parts.db").read()
+        self.assertNotIn(stored.encode(), data)
+        self.assertNotIn(b"Phone", data)
+        db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
+        with Inventory(db_path, read_only=True) as copy:
+            self.assertIsNone(copy.check_token(token))
+        self.assertEqual(self.server.check_token(token).name, "Phone")  # the server keeps it
+
     def test_attachment_deleted_during_the_snapshot_is_left_out(self):
         attachment = self.server.get_part(self.part_id).attachments[0]
         add = tarfile.TarFile.add
@@ -233,10 +245,10 @@ class SnapshotTest(unittest.TestCase):
         db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")
         with sqlite3.connect(db_path) as conn:  # as if an older partstrack had made it
             conn.execute(f"PRAGMA user_version = {len(MIGRATIONS) - 1}")
-            conn.execute("DROP TABLE stock_log")
-            conn.execute("ALTER TABLE parts DROP COLUMN min_quantity")
+            conn.execute("DROP TABLE api_tokens")  # what the last migration adds
         with Inventory(db_path, read_only=True) as copy:
-            self.assertEqual(copy.get_part(self.part_id).min_quantity, None)
+            self.assertEqual(copy.list_tokens(), [])
+            self.assertEqual(copy.get_part(self.part_id).name, "NE555")
 
     def test_damaged_marker_still_means_read_only(self):
         db_path = unpack_copy(self.snapshot(), self.dir / "copy", source="http://a/")

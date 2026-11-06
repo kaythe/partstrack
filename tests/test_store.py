@@ -22,8 +22,8 @@ import unittest
 from pathlib import Path
 
 from partstrack.store import (
-    MAX_QUANTITY, MIGRATIONS, Inventory, InventoryError, NotFoundError, portable_filename, si_number,
-    whole_number,
+    MAX_QUANTITY, MIGRATIONS, TOKEN_PREFIX, Inventory, InventoryError, NotFoundError, portable_filename,
+    si_number, whole_number,
 )
 
 
@@ -547,6 +547,51 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(self.inv.get_part(part_id).stock[0].quantity, MAX_QUANTITY)
 
 
+class TokenTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.inv = Inventory(Path(self.tmp.name) / "parts.db")
+        self.addCleanup(self.inv.close)
+
+    def test_create_check_list_and_revoke(self):
+        phone = self.inv.create_token(" Phone ")
+        laptop = self.inv.create_token("Laptop")
+        self.assertTrue(phone.startswith(TOKEN_PREFIX))
+        self.assertGreater(len(phone), 40)
+        self.assertNotEqual(phone, laptop)
+        self.assertEqual([(t.name, t.last_used_at) for t in self.inv.list_tokens()], [("Laptop", None), ("Phone", None)])
+
+        token = self.inv.check_token(phone)
+        self.assertEqual(token.name, "Phone")
+        self.assertIsNotNone(self.inv.list_tokens()[1].last_used_at)
+        self.assertIsNone(self.inv.check_token(phone + "x"))
+        self.assertIsNone(self.inv.check_token(""))
+        stored = self.inv.conn.execute("SELECT group_concat(hash) FROM api_tokens").fetchone()[0]
+        self.assertNotIn(phone, stored)  # only hashes are kept
+
+        self.assertEqual(self.inv.revoke_token("phone"), "Phone")
+        self.assertIsNone(self.inv.check_token(phone))
+        laptop_id = self.inv.list_tokens()[0].id
+        self.assertEqual(self.inv.revoke_token(f"#{laptop_id}"), "Laptop")
+        self.assertEqual(self.inv.list_tokens(), [])
+        for ref in ("Phone", "#999", "#" + "9" * 30, "#x"):
+            with self.subTest(ref=ref), self.assertRaises(NotFoundError):
+                self.inv.revoke_token(ref)
+
+    def test_names(self):
+        self.inv.create_token("Phone")
+        for name, message in [("PHONE", "already exists"), ("  ", "must not be empty"), ("#1", "cannot start")]:
+            with self.subTest(name=name), self.assertRaisesRegex(InventoryError, message):
+                self.inv.create_token(name)
+
+    def test_read_only_copy_checks_without_writing(self):
+        token = self.inv.create_token("Phone")
+        with Inventory(self.inv.db_path, read_only=True) as copy:
+            self.assertEqual(copy.check_token(token).name, "Phone")
+        self.assertIsNone(self.inv.list_tokens()[0].last_used_at)
+
+
 class MigrationTest(unittest.TestCase):
     def test_v1_flat_locations_become_nested(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -593,6 +638,20 @@ class MigrationTest(unittest.TestCase):
                     [("NE555", "Bench", 1, 1, "initial"), ("NE555", "Cabinet/Drawer 4", 5, 5, "initial"),
                      ("LM358", "Bench", 7, 7, "initial")],
                 )
+
+
+    def test_v4_gets_api_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "parts.db"
+            conn = sqlite3.connect(db)
+            for migration in MIGRATIONS[:4]:
+                migration(conn) if callable(migration) else conn.executescript(migration)
+            conn.executescript("PRAGMA user_version = 4; INSERT INTO parts (id, name) VALUES (1, 'NE555');")
+            conn.close()
+            with Inventory(db) as inv:
+                self.assertEqual(inv.list_tokens(), [])
+                self.assertEqual(inv.check_token(inv.create_token("Phone")).name, "Phone")
+                self.assertEqual(inv.get_part(1).name, "NE555")
 
 
 if __name__ == "__main__":

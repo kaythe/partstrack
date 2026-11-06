@@ -86,6 +86,11 @@ def write_snapshot(inv: Inventory, target: Path | BinaryIO) -> None:
         try:
             with copy:
                 inv.conn.backup(copy)
+            # Anyone who can reach the server may download a snapshot, so it must
+            # not contain the API tokens' hashes; secure_delete overwrites them.
+            copy.execute("PRAGMA secure_delete = ON")
+            with copy:
+                copy.execute("DELETE FROM api_tokens")
         finally:
             copy.close()
         if isinstance(target, Path):

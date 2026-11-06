@@ -319,6 +319,31 @@ def cmd_tags(inv: Inventory, args: argparse.Namespace) -> None:
     print_table(["Tag", "Parts"], [[name, count] for name, count in tags])
 
 
+def cmd_token_add(inv: Inventory, args: argparse.Namespace) -> None:
+    token = inv.create_token(args.name)
+    print(f"Added token '{args.name.strip()}'. It can't be shown again, so copy it now:")
+    print()
+    print(f"    {token}")
+    print()
+    print("Send it with changes to the web API as the header 'Authorization: Bearer <token>'.")
+
+
+def cmd_token_list(inv: Inventory, args: argparse.Namespace) -> None:
+    tokens = inv.list_tokens()
+    if not tokens:
+        print("No tokens yet.")
+        return
+    print_table(
+        ["ID", "Name", "Created (UTC)", "Last used (UTC)"],
+        [[f"#{t.id}", t.name, t.created_at, t.last_used_at or "never"] for t in tokens],
+    )
+
+
+def cmd_token_rm(inv: Inventory, args: argparse.Namespace) -> None:
+    name = inv.revoke_token(args.token)
+    print(f"Revoked token '{name}'")
+
+
 def csv_delimiter(text: str) -> str:
     """argparse type for --delimiter: what Python's csv module accepts."""
     if len(text) != 1 or text in '"\r\n':
@@ -528,6 +553,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("tags", help="list tags")
     p.set_defaults(func=cmd_tags)
+
+    p = sub.add_parser("token", help="add, list or revoke tokens for changes through the web API")
+    token_sub = p.add_subparsers(dest="token_command", required=True, metavar="ACTION")
+    tp = token_sub.add_parser("add", help="add a token, e.g. for a phone, and show it (only this once)")
+    tp.add_argument("name", help="what the token is for, e.g. 'Pixel 8'")
+    tp.set_defaults(func=cmd_token_add)
+    tp = token_sub.add_parser("list", aliases=["ls"], help="list tokens and when they were last used")
+    tp.set_defaults(func=cmd_token_list)
+    tp = token_sub.add_parser("rm", help="revoke a token, given by name or as #id")
+    tp.add_argument("token")
+    tp.set_defaults(func=cmd_token_rm)
 
     p = sub.add_parser("export", help="export all parts as CSV")
     p.add_argument("-o", "--output", type=Path, help="CSV file to write (default: standard output)")

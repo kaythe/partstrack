@@ -27,9 +27,11 @@ a leading "/" requires the full path from the top level.
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import ipaddress
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -57,6 +59,7 @@ LOCATION_SEPARATOR = "/"
 # have 64 bits; staying far below that means sums of quantities can't overflow.
 MAX_QUANTITY = 10**12
 NEW_PART_NOTE = "new part"  # stock history note for the initial stock of a part being added
+TOKEN_PREFIX = "pt_"  # starts every API token, so one is easy to recognise (e.g. by secret scanners)
 
 # Prefix for queries that need the full path of each location.
 LOCATION_PATHS = """
@@ -222,6 +225,17 @@ MIGRATIONS: list[str | Callable[[sqlite3.Connection], None]] = [
     FROM stock s JOIN paths p ON p.id = s.location_id
     ORDER BY s.part_id, p.path;
     """,
+    # Tokens that allow changes through the web interface's JSON API. Only a
+    # hash of each token is kept; the token itself is shown once, when created.
+    """
+    CREATE TABLE api_tokens (
+        id           INTEGER PRIMARY KEY,
+        name         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        hash         TEXT NOT NULL UNIQUE,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at TEXT
+    );
+    """,
 ]
 
 
@@ -306,6 +320,16 @@ class StockChange:
     quantity: int  # at that location afterwards
     action: str  # 'initial', 'set', 'adjust' or 'move'
     note: str
+
+
+@dataclass
+class ApiToken:
+    """A token that allows changes through the web API (the token itself is never stored)."""
+
+    id: int
+    name: str
+    created_at: str  # UTC, 'YYYY-MM-DD HH:MM:SS'
+    last_used_at: str | None
 
 
 @dataclass
@@ -562,6 +586,12 @@ def nocase(text: str) -> str:
     """Fold case the way SQLite's NOCASE collation does (ASCII letters only),
     so Python comparisons agree with the database's uniqueness rules."""
     return text.translate(_ASCII_LOWER)
+
+
+def _token_hash(token: str) -> str:
+    # A plain hash is enough: tokens are long random strings, not passwords
+    # people choose, so there is nothing to gain from guessing.
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def whole_number(text: str) -> int | None:
@@ -1132,9 +1162,11 @@ class Inventory:
     def location_path(self, location: str | int) -> str:
         """Return the full path of an existing location, given by reference or id."""
         location_id = location if isinstance(location, int) else self._location_id(location, create=False)
-        row = self.conn.execute(
-            LOCATION_PATHS + "SELECT path FROM location_paths WHERE id = ?", (location_id,)
-        ).fetchone()
+        row = None
+        if _fits_sqlite(location_id):
+            row = self.conn.execute(
+                LOCATION_PATHS + "SELECT path FROM location_paths WHERE id = ?", (location_id,)
+            ).fetchone()
         if row is None:
             raise NotFoundError(f"no location with id {location_id}")
         return row["path"]
@@ -1428,6 +1460,56 @@ class Inventory:
         if row is None:
             raise NotFoundError(f"no attachment with id {attachment_id}")
         return self._attachment_from_row(row)
+
+    # -- API tokens ----------------------------------------------------------
+
+    def create_token(self, name: str) -> str:
+        """Add a token that allows changes through the web API and return it.
+        Only a hash is stored, so this is the only time the token can be seen."""
+        name = name.strip()
+        if not name:
+            raise InventoryError("token name must not be empty")
+        if name.startswith("#"):
+            raise InventoryError("token names cannot start with '#', which marks token ids")
+        token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+        try:
+            with self.transaction():
+                self.conn.execute("INSERT INTO api_tokens (name, hash) VALUES (?, ?)", (name, _token_hash(token)))
+        except sqlite3.IntegrityError:
+            raise InventoryError(f"a token named '{name}' already exists") from None
+        return token
+
+    def list_tokens(self) -> list[ApiToken]:
+        rows = self.conn.execute(
+            "SELECT id, name, created_at, last_used_at FROM api_tokens ORDER BY name"
+        ).fetchall()
+        return [ApiToken(r["id"], r["name"], r["created_at"], r["last_used_at"]) for r in rows]
+
+    def revoke_token(self, ref: str) -> str:
+        """Delete a token, given by name or as '#id'; returns its name."""
+        ref = ref.strip()
+        row = self.conn.execute("SELECT id, name FROM api_tokens WHERE name = ?", (ref,)).fetchone()
+        number = whole_number(ref.removeprefix("#")) if ref.startswith("#") else None
+        if row is None and number is not None and _fits_sqlite(number):
+            row = self.conn.execute("SELECT id, name FROM api_tokens WHERE id = ?", (number,)).fetchone()
+        if row is None:
+            raise NotFoundError(f"no token '{ref}'")
+        with self.transaction():
+            self.conn.execute("DELETE FROM api_tokens WHERE id = ?", (row["id"],))
+        return row["name"]
+
+    def check_token(self, token: str) -> ApiToken | None:
+        """The API token `token` is, or None if it isn't one (e.g. revoked).
+        Notes the time it was used, except in a read-only copy."""
+        row = self.conn.execute(
+            "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE hash = ?", (_token_hash(token),)
+        ).fetchone()
+        if row is None:
+            return None
+        if not self.read_only:
+            with self.transaction():
+                self.conn.execute("UPDATE api_tokens SET last_used_at = datetime('now') WHERE id = ?", (row["id"],))
+        return ApiToken(row["id"], row["name"], row["created_at"], row["last_used_at"])
 
     # -- helpers -------------------------------------------------------------
 
