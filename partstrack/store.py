@@ -1146,18 +1146,31 @@ class Inventory:
 
     def list_locations(self) -> list[Location]:
         """Return all locations in tree order (each parent before its children)."""
+        return sorted(self._load_locations(), key=lambda l: _path_key(l.path))
+
+    def get_location(self, location_id: int) -> Location:
+        """Return one location, with its part count and total quantity."""
+        found = self._load_locations(location_id) if _fits_sqlite(location_id) else []
+        if not found:
+            raise NotFoundError(f"no location with id {location_id}")
+        return found[0]
+
+    def _load_locations(self, location_id: int | None = None) -> list[Location]:
+        """All locations, or only the one with `location_id`, in no particular order."""
         rows = self.conn.execute(
             LOCATION_PATHS
             + "SELECT l.id, l.name, lp.path, l.parent_id, l.description,"
             " COUNT(s.part_id) AS part_count, COALESCE(SUM(s.quantity), 0) AS total"
             " FROM locations l JOIN location_paths lp ON lp.id = l.id"
-            " LEFT JOIN stock s ON s.location_id = l.id GROUP BY l.id"
+            " LEFT JOIN stock s ON s.location_id = l.id"
+            + (" WHERE l.id = ?" if location_id is not None else "")
+            + " GROUP BY l.id",
+            () if location_id is None else (location_id,),
         ).fetchall()
-        locations = [
+        return [
             Location(r["id"], r["name"], r["path"], r["parent_id"], r["description"], r["part_count"], r["total"])
             for r in rows
         ]
-        return sorted(locations, key=lambda l: _path_key(l.path))
 
     def location_path(self, location: str | int) -> str:
         """Return the full path of an existing location, given by reference or id."""

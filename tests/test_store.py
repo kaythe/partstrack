@@ -244,6 +244,20 @@ class InventoryTest(unittest.TestCase):
         )
         self.assertEqual(len(self.inv.list_parts(location="Cabinet B")), 1)
 
+    def test_get_location(self):
+        ne555, lm358 = self.inv.add_part("NE555"), self.inv.add_part("LM358")
+        self.inv.set_stock(ne555, "Cabinet/Drawer 1", 5)
+        self.inv.set_stock(lm358, "Cabinet/Drawer 1", 2)
+        self.inv.update_location("Drawer 1", description="op-amps and timers")
+        for location in self.inv.list_locations():
+            with self.subTest(location.path):
+                self.assertEqual(self.inv.get_location(location.id), location)
+        drawer = self.inv.get_location(self.inv.list_locations()[1].id)
+        self.assertEqual((drawer.part_count, drawer.total_quantity), (2, 7))
+        for missing in (999, 10**30):
+            with self.subTest(missing), self.assertRaisesRegex(NotFoundError, "no location with id"):
+                self.inv.get_location(missing)
+
     def test_leading_slash_means_full_path(self):
         part_id = self.inv.add_part("LM317")
         self.inv.set_stock(part_id, "Shelf/Box", 1)

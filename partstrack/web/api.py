@@ -187,7 +187,7 @@ def locations():
 
 @api.get("/locations/<int:location_id>")
 def location(location_id: int):
-    return jsonify(_location(_get_location(location_id)))
+    return jsonify(_location(inventory().get_location(location_id)))
 
 
 @api.get("/tags")
@@ -370,7 +370,7 @@ def add_location():
     data = _body({"path", "description"}, required=("path",))
     inv = inventory()
     location_id = inv.add_location(_location_ref(data, "path"), _text(data, "description"))
-    response = jsonify(_location(_get_location(location_id)))
+    response = jsonify(_location(inv.get_location(location_id)))
     return response, 201, {"Location": url_for("api.location", location_id=location_id, _external=True)}
 
 
@@ -388,7 +388,7 @@ def update_location(location_id: int):
         parent=parent,
         top_level="parent" in data and data["parent"] is None,
     )
-    return jsonify(_location(_get_location(location_id)))
+    return jsonify(_location(inv.get_location(location_id)))
 
 
 @api.delete("/locations/<int:location_id>")
@@ -417,13 +417,6 @@ def _locations_from_body(part_id: int) -> Iterator[None]:
     except NotFoundError as e:
         inventory().get_part(part_id)  # a missing part is still a 404
         raise InventoryError(str(e)) from None
-
-
-def _get_location(location_id: int) -> Location:
-    for location in inventory().list_locations():
-        if location.id == location_id:
-            return location
-    raise NotFoundError(f"no location with id {location_id}")
 
 
 # -- request bodies -----------------------------------------------------------
