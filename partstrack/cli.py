@@ -330,8 +330,8 @@ def cmd_token_add(inv: Inventory, args: argparse.Namespace) -> None:
     print()
     # Only for people at a terminal that can show it: scripts reading the output get the
     # plain text, and a failure here would come after the token was already saved.
-    if sys.stdout.isatty() and _can_show("".join(QR_BLOCKS.values())) and (code := terminal_qr(token)):
-        _enable_terminal_colours()
+    if (sys.stdout.isatty() and _can_show("".join(QR_BLOCKS.values())) and (code := terminal_qr(token))
+            and _enable_terminal_colours()):
         print("Or scan it with the app:")
         print()
         print(code)
@@ -369,18 +369,23 @@ def terminal_qr(text: str) -> str | None:
     )
 
 
-def _enable_terminal_colours() -> None:
-    """Windows consoles show colour codes as text unless asked to interpret them."""
+def _enable_terminal_colours() -> bool:
+    """Whether the terminal interprets colour codes. Windows consoles show them as text
+    unless asked not to, and legacy ones (or e.g. NUL, which counts as a terminal) can't."""
     if os.name != "nt":
-        return
+        return True
     import ctypes
     from ctypes import wintypes
 
+    vt_processing = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
     kernel32 = ctypes.windll.kernel32
     handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
     mode = wintypes.DWORD()
-    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-        kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return False
+    if mode.value & vt_processing:
+        return True
+    return bool(kernel32.SetConsoleMode(handle, mode.value | vt_processing))
 
 
 def cmd_token_list(inv: Inventory, args: argparse.Namespace) -> None:

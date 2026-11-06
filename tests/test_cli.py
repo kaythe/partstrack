@@ -92,9 +92,11 @@ class CommandTest(unittest.TestCase):
             self.assertEqual(main(["--db", self.db, "token", "rm", "Pixel 8"]), 1)
         self.assertIn("no token 'Pixel 8'", err.getvalue())
 
-    def add_token_on_terminal(self, name, encoding="utf-8"):
+    def add_token_on_terminal(self, name, encoding="utf-8", colours=True):
         out = TerminalOutput(encoding)
-        with contextlib.redirect_stdout(out):
+        # The tests' own output is no console; test_colour_codes_are_used_only_if_the_console_takes_them asks one.
+        with contextlib.redirect_stdout(out), \
+                mock.patch("partstrack.cli._enable_terminal_colours", return_value=colours):
             self.assertEqual(main(["--db", self.db, "token", "add", name]), 0)
         output = out.getvalue()
         token = next(word for word in output.split() if word.startswith("pt_"))
@@ -133,6 +135,41 @@ class CommandTest(unittest.TestCase):
                 output, token = self.add_token_on_terminal(f"Pixel {encoding}", encoding)
                 self.assertIn(f"    {token}\n", output)
                 self.assertNotIn("\033", output)
+        # e.g. a legacy Windows console, which would show the colour codes as text
+        output, token = self.add_token_on_terminal("Pixel legacy", colours=False)
+        self.assertIn(f"    {token}\n", output)
+        self.assertNotIn("\033", output)
+        self.assertNotIn("scan", output)
+
+    @unittest.skipUnless(os.name == "nt", "asks the Windows console")
+    def test_colour_codes_are_used_only_if_the_console_takes_them(self):
+        import ctypes
+
+        from partstrack.cli import _enable_terminal_colours
+
+        VT = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        cases = [  # GetConsoleMode result, current mode, SetConsoleMode result, expected
+            (0, 0, 1, False),   # not a console, e.g. NUL
+            (1, 3, 0, False),   # legacy console refuses
+            (1, 3, 1, True),
+            (1, 3 | VT, 0, True),  # already on: nothing to change
+        ]
+        for get_result, mode, set_result, expected in cases:
+            kernel32 = mock.Mock()
+
+            def get_console_mode(handle, pointer, mode=mode, result=get_result):
+                ctypes.cast(pointer, ctypes.POINTER(ctypes.c_ulong)).contents.value = mode
+                return result
+
+            kernel32.GetConsoleMode.side_effect = get_console_mode
+            kernel32.SetConsoleMode.return_value = set_result
+            with self.subTest(get=get_result, mode=mode, set=set_result), \
+                    mock.patch.object(ctypes, "windll", mock.Mock(kernel32=kernel32)):
+                self.assertIs(_enable_terminal_colours(), expected)
+                if get_result and not mode & VT:
+                    kernel32.SetConsoleMode.assert_called_once_with(kernel32.GetStdHandle.return_value, mode | VT)
+                else:
+                    kernel32.SetConsoleMode.assert_not_called()
 
     def test_minimum_low_stock_and_history(self):
         self.run_cli("add", "NE555", "-q", "20", "-l", "Drawer 3", "--min", "10")
