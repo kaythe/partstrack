@@ -445,6 +445,7 @@ class ApiChangeTest(unittest.TestCase):
         self.assertIn("already a stored file", self.send("POST", f"{url}/{kept['id']}/download", status=400)["error"])
         for body, message in [
             ({"url": "/etc/passwd"}, "is not a link"),
+            ({"url": "https://["}, "is not a link"),
             ({"url": "https://example.com/x", "download": "yes"}, "'download' must be true or false"),
             ({"url": "https://example.com/x", "kind": "photo"}, "'kind' must be one of"),
             ({"link": "https://example.com/x"}, "unknown field(s): link"),

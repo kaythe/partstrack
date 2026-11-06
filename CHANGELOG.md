@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The JSON API answers unexpected server errors (such as a database that
   stays locked by another change) with a JSON error and status 500, like its
   other errors, instead of an HTML page.
+- A malformed link such as `https://[` no longer causes a server error in the
+  web interface or a traceback in the CLI; it is refused like any other text
+  that isn't a link.
 
 ## [1.2.1] - 2026-11-05
 

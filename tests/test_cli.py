@@ -133,6 +133,10 @@ class CommandTest(unittest.TestCase):
         self.assertNotIn("Traceback", err.getvalue())
         return err.getvalue()
 
+    def test_malformed_link_is_reported_without_traceback(self):
+        self.run_cli("add", "NE555")
+        self.assertIn("no such file: https://[", self.run_failing("attach", "NE555", "https://["))
+
     def test_file_and_database_errors_are_reported_without_traceback(self):
         self.run_cli("add", "NE555")
         self.assertIn("nonexistent", self.run_failing("export", "-o", str(Path(self.tmp.name) / "nonexistent" / "x.csv")))

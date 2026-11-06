@@ -435,6 +435,16 @@ class WebTest(unittest.TestCase):
                                     content_type="multipart/form-data")
         self.assertIn("Nothing was saved yet", response.get_data(as_text=True))
 
+    def test_malformed_link_is_refused_with_a_message(self):
+        with self.inventory() as inv:
+            part_id = inv.add_part("LM358")
+        response = self.client.post(f"/parts/{part_id}/attachments", data={"links": "https://["},
+                                    follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("is not a link", response.get_data(as_text=True))
+        with self.inventory() as inv:
+            self.assertEqual(inv.get_part(part_id).attachments, [])
+
     def test_store_link_locally_button(self):
         with serve({"/ds.pdf": (200, "application/pdf", b"%PDF")}) as base:
             with self.inventory() as inv:

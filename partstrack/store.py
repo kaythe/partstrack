@@ -357,7 +357,11 @@ def guess_attachment_kind(source: str) -> str:
 
 
 def is_url(source: str) -> bool:
-    return urlparse(source).scheme in ("http", "https", "ftp")
+    try:
+        scheme = urlparse(source).scheme
+    except ValueError:  # e.g. 'https://[', an unfinished IPv6 address
+        return False
+    return scheme in ("http", "https", "ftp")
 
 
 def downloadable_name(url: str) -> str | None:
@@ -1390,14 +1394,17 @@ class Inventory:
             self._touch(part_id)
         return cur.lastrowid
 
-    def remove_attachment(self, attachment_id: int) -> None:
-        row = None
-        if _fits_sqlite(attachment_id):
-            row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
-        if row is None:
-            raise NotFoundError(f"no attachment with id {attachment_id}")
+    def remove_attachment(self, attachment_id: int, part_id: int | None = None) -> None:
+        """Remove an attachment (and its stored file). With `part_id`, only if it
+        belongs to that part; ids of removed attachments can be reused, so a
+        caller that knows the part should pass it."""
         with self.transaction():
-            self.conn.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+            row = self._find_attachment(attachment_id, part_id)
+            # Only the row just read: ids can be reused, e.g. by another part's attachment.
+            if not self.conn.execute(
+                "DELETE FROM attachments WHERE id = ? AND part_id = ?", (attachment_id, row["part_id"])
+            ).rowcount:
+                raise NotFoundError(f"no attachment with id {attachment_id}")
             self._touch(row["part_id"])
             if row["path"]:
                 stored = self.attachments_dir / row["path"]
@@ -1422,14 +1429,15 @@ class Inventory:
         attachments = [self._attachment_from_row(r) for r in self.conn.execute(sql + " ORDER BY part_id, id", params)]
         return [a for a in attachments if downloadable_name(a.url)]
 
-    def download_attachment(self, attachment_id: int) -> Attachment:
+    def download_attachment(self, attachment_id: int, part_id: int | None = None) -> Attachment:
         """Replace a link that points to a single file with a stored copy of
-        that file. The link is kept as the attachment's `source_url`.
+        that file. The link is kept as the attachment's `source_url`. With
+        `part_id`, only if the attachment belongs to that part.
 
         Call this outside of transaction(): downloading can take a while, and
         an open transaction would block other writers meanwhile.
         """
-        attachment = self.get_attachment(attachment_id)
+        attachment = self._attachment_from_row(self._find_attachment(attachment_id, part_id))
         if attachment.url is None:
             raise InventoryError("this attachment is already a stored file")
         name = downloadable_name(attachment.url)
@@ -1448,9 +1456,9 @@ class Inventory:
                 downloaded.replace(dest)
                 updated = self.conn.execute(
                     "UPDATE attachments SET path = ?, url = NULL, source_url = ?, original_name = ?"
-                    " WHERE id = ? AND url = ?",
+                    " WHERE id = ? AND part_id = ? AND url = ?",  # not a new attachment with this id
                     (dest.relative_to(self.attachments_dir).as_posix(), attachment.url, name,
-                     attachment_id, attachment.url),
+                     attachment_id, attachment.part_id, attachment.url),
                 ).rowcount
                 if not updated:
                     raise InventoryError("the attachment was changed or removed during the download")
@@ -1473,12 +1481,17 @@ class Inventory:
         return results
 
     def get_attachment(self, attachment_id: int) -> Attachment:
+        return self._attachment_from_row(self._find_attachment(attachment_id))
+
+    def _find_attachment(self, attachment_id: int, part_id: int | None = None) -> sqlite3.Row:
         row = None
         if _fits_sqlite(attachment_id):
             row = self.conn.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        if row is not None and part_id is not None and row["part_id"] != part_id:
+            raise NotFoundError(f"part {part_id} has no attachment with id {attachment_id}")
         if row is None:
             raise NotFoundError(f"no attachment with id {attachment_id}")
-        return self._attachment_from_row(row)
+        return row
 
     # -- API tokens ----------------------------------------------------------
 
@@ -1507,14 +1520,18 @@ class Inventory:
     def revoke_token(self, ref: str) -> str:
         """Delete a token, given by name or as '#id'; returns its name."""
         ref = ref.strip()
-        row = self.conn.execute("SELECT id, name FROM api_tokens WHERE name = ?", (ref,)).fetchone()
         number = whole_number(ref.removeprefix("#")) if ref.startswith("#") else None
-        if row is None and number is not None and _fits_sqlite(number):
-            row = self.conn.execute("SELECT id, name FROM api_tokens WHERE id = ?", (number,)).fetchone()
-        if row is None:
-            raise NotFoundError(f"no token '{ref}'")
         with self.transaction():
-            self.conn.execute("DELETE FROM api_tokens WHERE id = ?", (row["id"],))
+            row = self.conn.execute("SELECT id, name, hash FROM api_tokens WHERE name = ?", (ref,)).fetchone()
+            if row is None and number is not None and _fits_sqlite(number):
+                row = self.conn.execute("SELECT id, name, hash FROM api_tokens WHERE id = ?", (number,)).fetchone()
+            # Ids of deleted tokens can be reused, so the hash makes sure that
+            # exactly the token looked up is deleted, not a new one with its id.
+            deleted = row is not None and self.conn.execute(
+                "DELETE FROM api_tokens WHERE id = ? AND hash = ?", (row["id"], row["hash"])
+            ).rowcount
+            if not deleted:
+                raise NotFoundError(f"no token '{ref}'")
         return row["name"]
 
     def check_token(self, token: str) -> ApiToken | None:

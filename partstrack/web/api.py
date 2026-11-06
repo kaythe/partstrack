@@ -303,27 +303,17 @@ def add_attachment(part_id: int):
     return jsonify(result), 201
 
 
+# Both pass the part, so a mistyped part id can't change another part's
+# attachment; the store checks it in the same statement that makes the change.
 @api.post("/parts/<int:part_id>/attachments/<int:attachment_id>/download")
 def download_attachment(part_id: int, attachment_id: int):
-    inv = inventory()
-    _part_attachment(part_id, attachment_id)
-    return jsonify(_attachment(inv.download_attachment(attachment_id)))
+    return jsonify(_attachment(inventory().download_attachment(attachment_id, part_id)))
 
 
 @api.delete("/parts/<int:part_id>/attachments/<int:attachment_id>")
 def remove_attachment(part_id: int, attachment_id: int):
-    _part_attachment(part_id, attachment_id)
-    inventory().remove_attachment(attachment_id)
+    inventory().remove_attachment(attachment_id, part_id)
     return "", 204
-
-
-def _part_attachment(part_id: int, attachment_id: int) -> Attachment:
-    """The attachment, if it belongs to that part; so a mistyped part id can't
-    remove another part's attachment."""
-    found = inventory().get_attachment(attachment_id)
-    if found.part_id != part_id:
-        raise NotFoundError(f"part {part_id} has no attachment with id {attachment_id}")
-    return found
 
 
 def _kind(value: object) -> str | None:

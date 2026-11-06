@@ -22,9 +22,35 @@ import unittest
 from pathlib import Path
 
 from partstrack.store import (
-    MAX_QUANTITY, MIGRATIONS, TOKEN_PREFIX, Inventory, InventoryError, NotFoundError, portable_filename,
+    MAX_QUANTITY, MIGRATIONS, TOKEN_PREFIX, Inventory, InventoryError, NotFoundError, is_url, portable_filename,
     si_number, whole_number,
 )
+
+
+class InterferingConnection:
+    """Wraps an Inventory's connection and runs `interfere(conn)` just before the
+    first statement starting with `before`, to test what happens when another
+    writer changes the database between a method's reads and its write. The
+    change runs in the method's transaction, so it is undone if that fails."""
+
+    def __init__(self, inv: Inventory, before: str, interfere):
+        self.conn, self.before, self.interfere, self.done = inv.conn, before, interfere, False
+        inv.conn = self
+
+    def execute(self, sql, *args):
+        if not self.done and sql.lstrip().startswith(self.before):
+            self.done = True
+            self.interfere(self.conn)
+        return self.conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+    def __enter__(self):
+        return self.conn.__enter__()
+
+    def __exit__(self, *exc):
+        return self.conn.__exit__(*exc)
 
 
 class InventoryTest(unittest.TestCase):
@@ -198,6 +224,43 @@ class InventoryTest(unittest.TestCase):
         for name, expected in cases.items():
             with self.subTest(name=name):
                 self.assertEqual(portable_filename(name), expected)
+
+    def test_malformed_links_are_not_links(self):
+        part_id = self.inv.add_part("NE555")
+        for text in ("https://[", "http://[::1", "https://]x"):
+            with self.subTest(text=text):
+                self.assertFalse(is_url(text))
+                with self.assertRaisesRegex(InventoryError, "no such file"):
+                    self.inv.add_attachment(part_id, text)
+        self.assertTrue(is_url("http://[::1]:8080/ds.pdf"))
+
+    def test_attachments_only_change_through_their_part(self):
+        ne555, lm358 = self.inv.add_part("NE555"), self.inv.add_part("LM358")
+        src = self.dir / "ds.pdf"
+        src.write_bytes(b"%PDF")
+        stored = self.inv.get_attachment(self.inv.add_attachment(ne555, str(src)))
+        link_id = self.inv.add_attachment(ne555, "https://example.com/ne555.pdf")
+        with self.assertRaisesRegex(NotFoundError, f"part {lm358} has no attachment"):
+            self.inv.remove_attachment(stored.id, lm358)
+        with self.assertRaisesRegex(NotFoundError, f"part {lm358} has no attachment"):
+            self.inv.download_attachment(link_id, lm358)  # refused before any download
+        self.assertTrue(stored.path.exists())
+        self.inv.remove_attachment(stored.id, ne555)
+        self.assertFalse(stored.path.exists())
+        self.inv.remove_attachment(link_id)  # without a part, as the web interface and CLI do
+        self.assertEqual(self.inv.get_part(ne555).attachments, [])
+
+    def test_remove_attachment_never_removes_another_parts_attachment(self):
+        ne555, lm358 = self.inv.add_part("NE555"), self.inv.add_part("LM358")
+        attachment_id = self.inv.add_attachment(ne555, "https://example.com/ne555.pdf")
+
+        def reuse_id(conn):  # as if it had been removed and its id given to an LM358 attachment
+            conn.execute("UPDATE attachments SET part_id = ? WHERE id = ?", (lm358, attachment_id))
+
+        InterferingConnection(self.inv, "DELETE FROM attachments", reuse_id)
+        with self.assertRaises(NotFoundError):
+            self.inv.remove_attachment(attachment_id, ne555)
+        self.inv.get_attachment(attachment_id)  # nothing was removed
 
     def test_attachments_are_stored_under_portable_names(self):
         part_id = self.inv.add_part("ESP32")
@@ -592,6 +655,19 @@ class TokenTest(unittest.TestCase):
         for ref in ("Phone", "#999", "#" + "9" * 30, "#x"):
             with self.subTest(ref=ref), self.assertRaises(NotFoundError):
                 self.inv.revoke_token(ref)
+
+    def test_revoke_never_deletes_a_new_token_with_a_reused_id(self):
+        self.inv.create_token("Phone")
+        self.inv.create_token("Tablet")
+        tablet_id = self.inv.list_tokens()[1].id
+
+        def replace_token(conn):  # 'Tablet' revoked, and a new token given its id
+            conn.execute("UPDATE api_tokens SET name = 'Laptop', hash = 'other' WHERE id = ?", (tablet_id,))
+
+        InterferingConnection(self.inv, "DELETE FROM api_tokens", replace_token)
+        with self.assertRaisesRegex(NotFoundError, "no token 'Tablet'"):
+            self.inv.revoke_token("Tablet")
+        self.assertEqual(len(self.inv.list_tokens()), 2)  # nothing was deleted
 
     def test_names(self):
         self.inv.create_token("Phone")
