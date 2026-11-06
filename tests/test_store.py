@@ -14,12 +14,14 @@
 #     You should have received a copy of the GNU General Public License
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import os
 import sqlite3
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from partstrack.store import (
     MAX_QUANTITY, MIGRATIONS, TOKEN_PREFIX, Inventory, InventoryError, NotFoundError, is_url, portable_filename,
@@ -264,15 +266,20 @@ class InventoryTest(unittest.TestCase):
 
     def test_attachments_are_stored_under_portable_names(self):
         part_id = self.inv.add_part("ESP32")
+        # Windows can't create 'a:b.pdf'; there 'a_B.pdf' clashes with 'A_b.pdf' (ignoring case) instead.
+        clash = "a_B.pdf" if os.name == "nt" else "a:b.pdf"
+        names = ["A_b.pdf", clash, "CON.pdf"]
         ids = []
-        for name in ["A_b.pdf", "a:b.pdf", "CON.pdf"]:
-            src = self.dir / name
+        for i, name in enumerate(names):
+            src = self.dir / str(i) / name  # one folder each, so 'a_B.pdf' can exist next to 'A_b.pdf'
+            src.parent.mkdir()
             src.write_bytes(name.encode())
             ids.append(self.inv.add_attachment(part_id, str(src)))
         attachments = [self.inv.get_attachment(i) for i in ids]
-        self.assertEqual([a.original_name for a in attachments], ["A_b.pdf", "a:b.pdf", "CON.pdf"])
-        self.assertEqual([a.path.name for a in attachments], ["A_b.pdf", "a_b-1.pdf", "_CON.pdf"])
-        self.assertEqual([a.path.read_text() for a in attachments], ["A_b.pdf", "a:b.pdf", "CON.pdf"])
+        self.assertEqual([a.original_name for a in attachments], names)
+        self.assertEqual([a.path.name for a in attachments],
+                         ["A_b.pdf", "a_B-1.pdf" if os.name == "nt" else "a_b-1.pdf", "_CON.pdf"])
+        self.assertEqual([a.path.read_text() for a in attachments], names)
 
     def test_location_with_stock_cannot_be_deleted(self):
         part_id = self.inv.add_part("LED red")
@@ -755,6 +762,39 @@ class MigrationTest(unittest.TestCase):
                 self.assertEqual(inv.list_tokens(), [])
                 self.assertEqual(inv.check_token(inv.create_token("Phone")).name, "Phone")
                 self.assertEqual(inv.get_part(1).name, "NE555")
+
+    def test_failed_open_closes_the_database(self):
+        # An open connection keeps the file locked on Windows, so it couldn't be deleted or replaced.
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_db = Path(tmp) / "notes.txt"
+            not_a_db.write_text("just text, " * 100)
+            newer = Path(tmp) / "newer" / "parts.db"
+            Inventory(newer).close()
+            conn = sqlite3.connect(newer)
+            conn.execute(f"PRAGMA user_version = {len(MIGRATIONS) + 1}")
+            conn.close()
+            for path, read_only, error in [(not_a_db, False, sqlite3.DatabaseError),
+                                           (newer, False, InventoryError), (newer, True, InventoryError)]:
+                opened = []
+
+                def connect(*args, **kwargs):
+                    opened.append(real_connect(*args, **kwargs))
+                    return opened[-1]
+
+                real_connect = sqlite3.connect
+                with self.subTest(path=path.name, read_only=read_only):
+                    with mock.patch("sqlite3.connect", connect), self.assertRaises(error):
+                        Inventory(path, read_only=read_only)
+                    left_open = 0
+                    for conn in opened:
+                        try:
+                            conn.total_changes  # raises on a closed connection without reading the file
+                        except sqlite3.ProgrammingError:  # closed
+                            continue
+                        left_open += 1
+                        conn.close()  # so the folder can still be deleted
+                    self.assertTrue(opened)
+                    self.assertEqual(left_open, 0)
 
 
 if __name__ == "__main__":
