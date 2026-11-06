@@ -24,6 +24,8 @@ from unittest import mock
 from partstrack import __version__
 from partstrack.store import Inventory
 
+from .fileserver import serve
+
 try:
     from partstrack.web.app import create_app
 except ImportError:  # the optional web dependencies are not installed
@@ -322,6 +324,91 @@ class ApiChangeTest(unittest.TestCase):
 
     def location_id(self, path):
         return next(l.id for l in self.inventory().list_locations() if l.path == path)
+
+    def upload(self, part_id, data, status=201):
+        response = self.client.post(f"/api/parts/{part_id}/attachments", data=data,
+                                    headers={"Authorization": f"Bearer {self.token}"},
+                                    content_type="multipart/form-data")
+        self.assertEqual(response.status_code, status, response.get_data(as_text=True))
+        return response.get_json()
+
+    def test_upload_file(self):
+        attachment = self.upload(self.ne555, {"file": (io.BytesIO(b"\x89PNG"), "../top view.png")})
+        self.assertEqual((attachment["kind"], attachment["name"], attachment["stored"]), ("image", "top view.png", True))
+        with self.client.get(attachment["url"]) as response:
+            self.assertEqual(response.get_data(), b"\x89PNG")
+        stored = self.inventory().get_attachment(attachment["id"])
+        self.assertEqual(stored.path.parent, Path(self.tmp.name) / "attachments" / str(self.ne555))
+        datasheet = self.upload(self.ne555, {"file": (io.BytesIO(b"x"), "pinout.txt"), "kind": "datasheet"})
+        self.assertEqual(datasheet["kind"], "datasheet")
+        self.assertEqual(len(self.send("GET", f"/api/parts/{self.ne555}")["attachments"]), 2)
+
+        for data, message in [
+            ({}, "missing field(s): file"),
+            ({"file": [(io.BytesIO(b"a"), "a.txt"), (io.BytesIO(b"b"), "b.txt")]}, "one file per request"),
+            ({"file": (io.BytesIO(b"a"), "a.txt"), "kind": "photo"}, "'kind' must be one of"),
+            ({"file": (io.BytesIO(b"a"), "a.txt"), "note": "x"}, "unknown field(s): note"),
+            ({"file": (io.BytesIO(b"a"), "a.txt"), "other": (io.BytesIO(b"b"), "b.txt")}, "unknown field(s): other"),
+        ]:
+            with self.subTest(data=data):
+                self.assertIn(message, self.upload(self.ne555, data, 400)["error"])
+        self.upload(999, {"file": (io.BytesIO(b"a"), "a.txt")}, 404)
+        self.assertEqual(len(self.inventory().get_part(self.ne555).attachments), 2)
+        response = self.client.post(f"/api/parts/{self.ne555}/attachments", content_type="multipart/form-data",
+                                    data={"file": (io.BytesIO(b"a"), "a.txt")})
+        self.assertEqual(response.status_code, 401)  # uploads need a token too
+
+    def test_upload_too_large(self):
+        self.client.application.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+        # Refused by its Content-Length, before anything is read.
+        response = self.client.post(f"/api/parts/{self.ne555}/attachments", data=b"x" * 2 * 1024 * 1024,
+                                    content_type="multipart/form-data; boundary=x",
+                                    headers={"Authorization": f"Bearer {self.token}"})
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.get_json(), {"error": "the request is larger than 1 MB"})
+
+    def test_add_link(self):
+        url = f"/api/parts/{self.ne555}/attachments"
+        page = self.send("POST", url, {"url": "https://example.com/ne555"}, 201)
+        self.assertEqual((page["stored"], page["url"], page["kind"]), (False, "https://example.com/ne555", "other"))
+        self.assertNotIn("download_error", page)
+        with serve({"/ds/ne555.pdf": (200, "application/pdf", b"%PDF"),
+                    "/missing.pdf": (404, "text/plain", b"")}) as base:
+            stored = self.send("POST", url, {"url": f"{base}/ds/ne555.pdf"}, 201)
+            self.assertEqual((stored["stored"], stored["kind"], stored["source_url"]),
+                             (True, "datasheet", f"{base}/ds/ne555.pdf"))
+            with self.client.get(stored["url"]) as response:
+                self.assertEqual(response.get_data(), b"%PDF")
+            kept = self.send("POST", url, {"url": f"{base}/ds/ne555.pdf", "kind": "other", "download": False}, 201)
+            self.assertEqual((kept["stored"], kept["kind"]), (False, "other"))
+            failed = self.send("POST", url, {"url": f"{base}/missing.pdf"}, 201)
+            self.assertFalse(failed["stored"])
+            self.assertIn("HTTP 404", failed["download_error"])
+            retried = self.send("POST", f"{url}/{kept['id']}/download")
+            self.assertEqual((retried["id"], retried["stored"]), (kept["id"], True))
+        self.assertIn("already a stored file", self.send("POST", f"{url}/{kept['id']}/download", status=400)["error"])
+        for body, message in [
+            ({"url": "/etc/passwd"}, "is not a link"),
+            ({"url": "https://example.com/x", "download": "yes"}, "'download' must be true or false"),
+            ({"url": "https://example.com/x", "kind": "photo"}, "'kind' must be one of"),
+            ({"link": "https://example.com/x"}, "unknown field(s): link"),
+        ]:
+            with self.subTest(body=body):
+                self.assertIn(message, self.send("POST", url, body, 400)["error"])
+        self.send("POST", "/api/parts/999/attachments", {"url": "https://example.com/x"}, 404)
+
+    def test_remove_attachment(self):
+        other = self.send("POST", "/api/parts", {"name": "LM358"}, 201)["id"]
+        attachment = self.upload(self.ne555, {"file": (io.BytesIO(b"x"), "a.txt")})
+        path = self.inventory().get_attachment(attachment["id"]).path
+        # Only through the part it belongs to, so a wrong part id can't remove it.
+        self.send("DELETE", f"/api/parts/{other}/attachments/{attachment['id']}", status=404)
+        self.send("POST", f"/api/parts/{other}/attachments/{attachment['id']}/download", status=404)
+        self.assertTrue(path.exists())
+        self.send("DELETE", f"/api/parts/{self.ne555}/attachments/{attachment['id']}", status=204)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.inventory().get_part(self.ne555).attachments, [])
+        self.send("DELETE", f"/api/parts/{self.ne555}/attachments/{attachment['id']}", status=404)
 
     def test_read_only_copy(self):
         (Path(self.tmp.name) / "partstrack-copy.json").write_text('{"kind": "server", "source": "http://a/"}')

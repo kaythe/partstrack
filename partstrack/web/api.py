@@ -26,8 +26,8 @@ sent, so other websites can't read the inventory through a visitor's browser
 either. Attachments are given as links to the web interface, never as file
 paths on the server.
 
-Requests with a body take a JSON object; unknown fields are refused, so a typo
-can't go unnoticed. Locations in bodies are full paths ('Cabinet/Drawer 3', as
+Requests with a body take a JSON object (file uploads: multipart/form-data);
+unknown fields are refused, so a typo can't go unnoticed. Locations in bodies are full paths ('Cabinet/Drawer 3', as
 the API returns them); missing ones are created where stock is put. In URLs,
 parts and locations are given by id.
 """
@@ -37,12 +37,13 @@ from __future__ import annotations
 import tempfile
 from datetime import datetime, timezone
 
-from flask import Blueprint, Response, g, jsonify, request, send_file, url_for
+from flask import Blueprint, Response, current_app, g, jsonify, request, send_file, url_for
 from werkzeug.exceptions import HTTPException
 
 from .. import __version__
 from ..snapshot import write_snapshot
 from ..store import (
+    ATTACHMENT_KINDS,
     EDITABLE_FIELDS,
     NEW_PART_NOTE,
     Attachment,
@@ -51,9 +52,10 @@ from ..store import (
     NotFoundError,
     Part,
     StockChange,
+    is_url,
     whole_number,
 )
-from .app import SAFE_METHODS, inventory
+from .app import SAFE_METHODS, _save_uploads, inventory
 
 api = Blueprint("api", __name__, url_prefix="/api")
 TRUE = ("1", "true", "yes", "on")
@@ -71,6 +73,7 @@ def _bad_request(e: InventoryError):  # e.g. an attribute filter that isn't a nu
 
 @api.app_errorhandler(404)
 @api.app_errorhandler(405)
+@api.app_errorhandler(413)
 def _http_error(e: HTTPException):
     """Unknown URLs and methods: JSON under /api (no route matched, so the
     blueprint's own handlers don't apply), the usual pages elsewhere."""
@@ -78,6 +81,8 @@ def _http_error(e: HTTPException):
         return e
     if e.code == 404:
         message = "no such API endpoint; see /api"
+    elif e.code == 413:
+        message = f"the request is larger than {current_app.config['MAX_CONTENT_LENGTH'] >> 20} MB"
     else:
         message = f"{request.method} is not allowed here; allowed: {', '.join(sorted(e.valid_methods or []))}"
     response = jsonify(error=message)
@@ -134,6 +139,12 @@ def index():
             "PATCH /api/parts/<id>": "change the fields given; tags and attributes replace all; "
                                      "min_quantity null removes it",
             "DELETE /api/parts/<id>": "delete a part with its stock, history and attachments",
+            "POST /api/parts/<id>/attachments": "attach a link as JSON: url, kind (" + ", ".join(ATTACHMENT_KINDS)
+                                                + "; default: from the name), download (default true: store a "
+                                                  "copy of a file a link points to); or upload a file as "
+                                                  "multipart/form-data: file, kind",
+            "POST /api/parts/<id>/attachments/<id>/download": "store a copy of the file a link points to",
+            "DELETE /api/parts/<id>/attachments/<id>": "remove an attachment",
             "POST /api/parts/<id>/stock": "location and either quantity (the new amount there) "
                                           "or delta (added or, if negative, taken); note",
             "POST /api/parts/<id>/move": "to, and from with an optional quantity (default: all there); "
@@ -246,6 +257,75 @@ def update_part(part_id: int):
 def delete_part(part_id: int):
     inventory().delete_part(part_id)
     return "", 204
+
+
+@api.post("/parts/<int:part_id>/attachments")
+def add_attachment(part_id: int):
+    """A link (JSON) or an uploaded file (multipart/form-data). Links to files are
+    downloaded after the commit, like everywhere else; if that fails, the link
+    is kept, and the answer says why in 'download_error'."""
+    inv = inventory()
+    if request.mimetype == "multipart/form-data":
+        _check_keys(request.form, {"kind"}, ())
+        _check_keys(request.files, {"file"}, ("file",))
+        uploads = request.files.getlist("file")
+        if len(uploads) > 1:
+            raise InventoryError("send one file per request")
+        if not uploads[0].filename:
+            raise InventoryError("the uploaded file needs a file name")
+        kind = _kind(request.form.get("kind"))
+        with inv.transaction():
+            inv.get_part(part_id)  # 404 before saving the upload for a missing part
+            (attachment_id,) = _save_uploads(inv, part_id, uploads, kind)
+        return jsonify(_attachment(inv.get_attachment(attachment_id))), 201
+
+    data = _body({"url", "kind", "download"}, required=("url",))
+    url = _text(data, "url")
+    if not is_url(url):
+        raise InventoryError(f"'{url}' is not a link (http://, https:// or ftp://)")
+    kind = _kind(data.get("kind"))
+    download = data.get("download", True)
+    if not isinstance(download, bool):
+        raise InventoryError("'download' must be true or false")
+    attachment_id = inv.add_attachment(part_id, url, kind)
+    result = _attachment(inv.get_attachment(attachment_id))
+    if download:
+        for stored, error in inv.download_links([attachment_id]):
+            result = _attachment(stored)
+            if error is not None:
+                result["download_error"] = str(error)
+    return jsonify(result), 201
+
+
+@api.post("/parts/<int:part_id>/attachments/<int:attachment_id>/download")
+def download_attachment(part_id: int, attachment_id: int):
+    inv = inventory()
+    _part_attachment(part_id, attachment_id)
+    return jsonify(_attachment(inv.download_attachment(attachment_id)))
+
+
+@api.delete("/parts/<int:part_id>/attachments/<int:attachment_id>")
+def remove_attachment(part_id: int, attachment_id: int):
+    _part_attachment(part_id, attachment_id)
+    inventory().remove_attachment(attachment_id)
+    return "", 204
+
+
+def _part_attachment(part_id: int, attachment_id: int) -> Attachment:
+    """The attachment, if it belongs to that part; so a mistyped part id can't
+    remove another part's attachment."""
+    found = inventory().get_attachment(attachment_id)
+    if found.part_id != part_id:
+        raise NotFoundError(f"part {part_id} has no attachment with id {attachment_id}")
+    return found
+
+
+def _kind(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    if value not in ATTACHMENT_KINDS:
+        raise InventoryError(f"'kind' must be one of {', '.join(ATTACHMENT_KINDS)}")
+    return value
 
 
 @api.post("/parts/<int:part_id>/stock")

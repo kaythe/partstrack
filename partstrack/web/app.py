@@ -265,7 +265,9 @@ def _safe_filename(filename: str) -> str:
     return name or "upload"
 
 
-def _save_uploads(inv: Inventory, part_id: int, uploads: list[FileStorage], kind: str | None) -> None:
+def _save_uploads(inv: Inventory, part_id: int, uploads: list[FileStorage], kind: str | None) -> list[int]:
+    """Attach uploaded files; returns the new attachments' ids."""
+    attachment_ids = []
     with tempfile.TemporaryDirectory() as tmp:
         for upload in uploads:
             if not upload or not upload.filename:
@@ -273,7 +275,8 @@ def _save_uploads(inv: Inventory, part_id: int, uploads: list[FileStorage], kind
             name = _safe_filename(upload.filename)
             path = Path(tmp) / portable_filename(name)  # the server may run on Windows
             upload.save(path)
-            inv.add_attachment(part_id, str(path), kind, name=name)
+            attachment_ids.append(inv.add_attachment(part_id, str(path), kind, name=name))
+    return attachment_ids
 
 
 def _save_links(inv: Inventory, part_id: int, text: str, kind: str | None) -> list[int]:

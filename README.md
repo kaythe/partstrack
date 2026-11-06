@@ -284,9 +284,18 @@ curl -H "$AUTH" -X DELETE http://parts.lan:8080/api/parts/12
 curl -H "$AUTH" --json '{"path": "Shelf/Box 1"}' http://parts.lan:8080/api/locations
 curl -H "$AUTH" -X PATCH --json '{"name": "Box A", "parent": null}' http://parts.lan:8080/api/locations/3
 curl -H "$AUTH" -X DELETE http://parts.lan:8080/api/locations/3
+curl -H "$AUTH" -F file=@top.jpg http://parts.lan:8080/api/parts/12/attachments   # upload a file
+curl -H "$AUTH" --json '{"url": "https://example.com/ne555.pdf"}' \
+  http://parts.lan:8080/api/parts/12/attachments    # a link; files are downloaded
+curl -H "$AUTH" -X DELETE http://parts.lan:8080/api/parts/12/attachments/7
 ```
 
-`/api` lists all fields each change accepts. Unknown fields are refused, so a
+Uploads take one file per request, with an optional `kind` (`datasheet`,
+`image` or `other`; by default guessed from the name). A link that points to a
+file is downloaded and stored, as in the web interface, unless the request says
+`"download": false`; if the download fails, the link is kept and the answer
+says why in `download_error` (try again with `POST
+/api/parts/<id>/attachments/<id>/download`). `/api` lists all fields each change accepts. Unknown fields are refused, so a
 typo doesn't go unnoticed, and each request is saved completely or not at all.
 Changes answer with the changed part or location. Snapshots (`/api/snapshot`)
 leave out the tokens.

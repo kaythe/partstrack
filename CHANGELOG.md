@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   need an API token, created with `partstrack token add NAME` (and listed and
   revoked with `token list` and `token rm`), sent as
   `Authorization: Bearer <token>`. Reading still needs no token.
+- The JSON API can add attachments to a part, as uploaded files or as links
+  (downloaded like in the web interface, unless asked not to), download a
+  link's file later, and remove attachments.
 - `/api/locations/<id>` shows one location, and locations in the API have an
   `api_url`.
 
