@@ -298,7 +298,7 @@ class ApiChangeTest(unittest.TestCase):
         self.assertEqual(self.stock(part), {"Bin": 7})
         self.assertIn("needs 'from'", self.send("POST", url, {"to": "Shelf", "quantity": 1}, 400)["error"])
         self.assertIn("missing field(s): to", self.send("POST", url, {"from": "Bin"}, 400)["error"])
-        self.assertIn("no location", self.send("POST", url, {"from": "Nowhere", "to": "Bin"}, 404)["error"])
+        self.assertIn("no location", self.send("POST", url, {"from": "Nowhere", "to": "Bin"}, 400)["error"])
 
     def test_locations(self):
         response = self.client.post("/api/locations", json={"path": "Shelf/Box 1", "description": "resistors"},
@@ -321,6 +321,43 @@ class ApiChangeTest(unittest.TestCase):
         self.send("PATCH", url, {"name": "x"}, 404)
         drawer = self.location_id("Cabinet/Drawer 1")
         self.assertIn("still holds", self.send("DELETE", f"/api/locations/{drawer}", status=400)["error"])
+
+    def test_location_changes_apply_to_the_location_in_the_url(self):
+        # Between reading the location and changing it, another request renames
+        # it and creates a new location with its old name.
+        real_location_path = Inventory.location_path
+
+        for method, body, status in [("PATCH", {"description": "mine"}, 200), ("DELETE", None, 204)]:
+            with self.subTest(method):
+                name, lookalikes = f"Shelf {method}", []
+
+                def racing_location_path(inv, location):
+                    path = real_location_path(inv, location)
+                    if path == name and not lookalikes:
+                        other = self.inventory()
+                        other.update_location(f"/{name}", new_name=f"Rack {method}")
+                        lookalikes.append(other.add_location(f"/{name}"))
+                    return path
+
+                shelf = self.inventory().add_location(f"/{name}")
+                with mock.patch.object(Inventory, "location_path", racing_location_path):
+                    self.send(method, f"/api/locations/{shelf}", body, status)
+                locations = {l.id: l for l in self.inventory().list_locations()}
+                if lookalikes:
+                    self.assertIn(lookalikes[0], locations, f"deleted the new '{name}' instead")
+                    self.assertEqual(locations[lookalikes[0]].description, "", f"changed the new '{name}' instead")
+                if method == "PATCH":
+                    self.assertEqual(locations[shelf].description, "mine")
+                else:
+                    self.assertNotIn(shelf, locations)
+
+    def test_unknown_location_in_body_is_a_bad_request(self):
+        # 404 means the URL (the part) wasn't found; a wrong location in the body is the client's input error.
+        stock, move = f"/api/parts/{self.ne555}/stock", f"/api/parts/{self.ne555}/move"
+        self.assertIn("no location", self.send("POST", stock, {"location": "Nowhere", "delta": -1}, 400)["error"])
+        self.assertIn("no location", self.send("POST", move, {"from": "Nowhere", "to": "Bin"}, 400)["error"])
+        self.send("POST", "/api/parts/999/stock", {"location": "Nowhere", "delta": -1}, 404)
+        self.send("POST", "/api/parts/999/move", {"from": "Nowhere", "to": "Bin"}, 404)
 
     def location_id(self, path):
         return next(l.id for l in self.inventory().list_locations() if l.path == path)

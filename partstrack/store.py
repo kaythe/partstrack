@@ -1173,7 +1173,7 @@ class Inventory:
 
     def update_location(
         self,
-        ref: str,
+        ref: str | int,
         *,
         new_name: str | None = None,
         description: str | None = None,
@@ -1181,14 +1181,15 @@ class Inventory:
         top_level: bool = False,
     ) -> None:
         """Rename a location, change its description, or move it (with
-        everything in it) into `parent` (created if needed) or to the top level."""
+        everything in it) into `parent` (created if needed) or to the top level.
+        `ref` is a reference or an id; front ends that know the id should pass it."""
         if parent is not None and top_level:
             raise InventoryError("a location cannot both have a parent and be at the top level")
         if new_name is not None:
             new_name = self._check_location_name(new_name)
         try:
             with self.transaction():
-                location_id = self._location_id(ref, create=False)
+                location_id = self._existing_location_id(ref)
                 if parent is not None or top_level:
                     parent_id = None if top_level else self._location_id(parent, create=True)
                     if parent_id in self._subtree_ids(location_id):
@@ -1203,19 +1204,24 @@ class Inventory:
         except sqlite3.IntegrityError:
             raise InventoryError("there already is a location with that name in that place") from None
 
-    def delete_location(self, ref: str) -> None:
-        location_id = self._location_id(ref, create=False)
-        count = self.conn.execute(
-            "SELECT COUNT(*) FROM stock WHERE location_id = ?", (location_id,)
-        ).fetchone()[0]
-        if count:
-            raise InventoryError(f"location '{ref}' still holds {count} part(s); move them first")
-        children = self.conn.execute(
-            "SELECT COUNT(*) FROM locations WHERE parent_id = ?", (location_id,)
-        ).fetchone()[0]
-        if children:
-            raise InventoryError(f"location '{ref}' still contains {children} sublocation(s)")
-        with self.transaction():
+    def delete_location(self, ref: str | int) -> None:
+        """Delete an empty location, given by reference or id."""
+        with self.transaction():  # check and delete together, so nothing is added in between
+            location_id = self._existing_location_id(ref)
+
+            def name() -> str:  # only looked up for an error message
+                return ref if isinstance(ref, str) else self.location_path(location_id)
+
+            count = self.conn.execute(
+                "SELECT COUNT(*) FROM stock WHERE location_id = ?", (location_id,)
+            ).fetchone()[0]
+            if count:
+                raise InventoryError(f"location '{name()}' still holds {count} part(s); move them first")
+            children = self.conn.execute(
+                "SELECT COUNT(*) FROM locations WHERE parent_id = ?", (location_id,)
+            ).fetchone()[0]
+            if children:
+                raise InventoryError(f"location '{name()}' still contains {children} sublocation(s)")
             self.conn.execute("DELETE FROM locations WHERE id = ?", (location_id,))
 
     # -- stock ---------------------------------------------------------------
@@ -1561,6 +1567,16 @@ class Inventory:
             paths = ", ".join(sorted(r["path"] for r in suffix_matches))
             raise InventoryError(f"'{ref}' could be any of: {paths}; give more of the path")
         return suffix_matches[0]["id"] if suffix_matches else None
+
+    def _existing_location_id(self, location: str | int) -> int:
+        """The id of an existing location, given by reference or id."""
+        if isinstance(location, str):
+            return self._location_id(location, create=False)
+        if not _fits_sqlite(location) or not self.conn.execute(
+            "SELECT 1 FROM locations WHERE id = ?", (location,)
+        ).fetchone():
+            raise NotFoundError(f"no location with id {location}")
+        return location
 
     def _location_id(self, ref: str, *, create: bool) -> int:
         location_id = self._find_location(ref)

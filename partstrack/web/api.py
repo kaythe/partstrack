@@ -35,6 +35,8 @@ parts and locations are given by id.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from flask import Blueprint, Response, current_app, g, jsonify, request, send_file, url_for
@@ -335,7 +337,7 @@ def change_stock(part_id: int):
         raise InventoryError("give either 'quantity' (the new amount) or 'delta' (the change), not both")
     location, note = _location_ref(data, "location"), _text(data, "note")
     inv = inventory()
-    with inv.transaction():
+    with _locations_from_body(part_id), inv.transaction():
         if "quantity" in data:
             inv.set_stock(part_id, location, _int(data, "quantity"), note=note)
         else:
@@ -348,7 +350,7 @@ def move_stock(part_id: int):
     data = _body({"from", "to", "quantity", "note"}, required=("to",))
     destination, note = _location_ref(data, "to"), _text(data, "note")
     inv = inventory()
-    with inv.transaction():
+    with _locations_from_body(part_id), inv.transaction():
         if "from" in data:
             quantity = _int(data, "quantity", nullable=True) if "quantity" in data else None
             inv.move_stock(part_id, _location_ref(data, "from"), destination, quantity, note=note)
@@ -372,12 +374,11 @@ def add_location():
 def update_location(location_id: int):
     data = _body({"name", "description", "parent"})
     inv = inventory()
-    ref = "/" + inv.location_path(location_id)
     parent = None
     if "parent" in data and data["parent"] is not None:
         parent = _location_ref(data, "parent")
     inv.update_location(
-        ref,
+        location_id,  # the id, not its path: the location may be renamed meanwhile
         new_name=_text(data, "name") if "name" in data else None,
         description=_text(data, "description") if "description" in data else None,
         parent=parent,
@@ -388,8 +389,7 @@ def update_location(location_id: int):
 
 @api.delete("/locations/<int:location_id>")
 def delete_location(location_id: int):
-    inv = inventory()
-    inv.delete_location("/" + inv.location_path(location_id))
+    inventory().delete_location(location_id)
     return "", 204
 
 
@@ -402,6 +402,17 @@ def _set_part_details(part_id: int, data: dict) -> None:
         inv.set_attributes(part_id, _text_object(data, "attributes"))
     if "min_quantity" in data:
         inv.set_min_quantity(part_id, _int(data, "min_quantity", nullable=True))
+
+
+@contextmanager
+def _locations_from_body(part_id: int) -> Iterator[None]:
+    """A location in the request body that doesn't exist is the client's input
+    error (400); 404 is only for things named in the URL, such as the part."""
+    try:
+        yield
+    except NotFoundError as e:
+        inventory().get_part(part_id)  # a missing part is still a 404
+        raise InventoryError(str(e)) from None
 
 
 def _get_location(location_id: int) -> Location:
