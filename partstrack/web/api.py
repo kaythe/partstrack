@@ -76,15 +76,19 @@ def _bad_request(e: InventoryError):  # e.g. an attribute filter that isn't a nu
 @api.app_errorhandler(404)
 @api.app_errorhandler(405)
 @api.app_errorhandler(413)
+@api.app_errorhandler(500)
 def _http_error(e: HTTPException):
-    """Unknown URLs and methods: JSON under /api (no route matched, so the
-    blueprint's own handlers don't apply), the usual pages elsewhere."""
+    """Unknown URLs and methods, and unexpected errors (e.g. a locked database):
+    JSON under /api (no route matched, or the error came from outside a route,
+    so the blueprint's own handlers don't apply), the usual pages elsewhere."""
     if request.path != "/api" and not request.path.startswith("/api/"):
         return e
     if e.code == 404:
         message = "no such API endpoint; see /api"
     elif e.code == 413:
         message = f"the request is larger than {current_app.config['MAX_CONTENT_LENGTH'] >> 20} MB"
+    elif e.code == 500:  # Flask has logged the details; don't show internals
+        message = "the server could not complete the request (see its log)"
     else:
         message = f"{request.method} is not allowed here; allowed: {', '.join(sorted(e.valid_methods or []))}"
     response = jsonify(error=message)

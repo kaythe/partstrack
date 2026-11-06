@@ -254,7 +254,8 @@ curl 'http://parts.lan:8080/api/history?part=12&limit=0'  # stock changes; limit
 
 Parts include their stock, tags, attributes, minimum quantity and whether they
 are low on stock. Attachments are links to the web interface. Errors come back
-as `{"error": "..."}` with a 4xx status.
+as `{"error": "..."}` with a 4xx status, or 500 if something went wrong on the
+server.
 
 Changes need an **API token**. Create one per device or program on the
 server; it is shown only once (the database keeps only a hash of it), so copy

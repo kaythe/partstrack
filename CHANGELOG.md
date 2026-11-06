@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Snapshots (`/api/snapshot`) leave out the API tokens.
 
+### Fixed
+
+- The JSON API answers unexpected server errors (such as a database that
+  stays locked by another change) with a JSON error and status 500, like its
+  other errors, instead of an HTML page.
+
 ## [1.2.1] - 2026-11-05
 
 ### Security

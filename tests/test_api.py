@@ -15,6 +15,7 @@
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import io
+import sqlite3
 import tarfile
 import tempfile
 import unittest
@@ -125,6 +126,16 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(response.get_json()["error"], "PUT is not allowed here; allowed: DELETE, GET, HEAD, OPTIONS, PATCH")
         self.assertEqual(response.headers["Allow"], "DELETE, GET, HEAD, OPTIONS, PATCH")
         self.assertEqual(self.client.get("/nope").content_type, "text/html; charset=utf-8")  # not under /api
+
+    def test_unexpected_errors_are_json(self):
+        locked = sqlite3.OperationalError("database is locked")
+        with mock.patch.object(Inventory, "list_tags", side_effect=locked), self.assertLogs("partstrack.web.app"):
+            body = self.get("/api/tags", 500)
+        self.assertNotIn("locked", body["error"])  # no internals; the log has the details
+        with mock.patch.object(Inventory, "list_tags", side_effect=locked), self.assertLogs("partstrack.web.app"):
+            response = self.client.get("/")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.content_type, "text/html; charset=utf-8")  # pages stay HTML
 
     def test_numbers_beyond_the_database_range(self):
         huge = "9" * 30
