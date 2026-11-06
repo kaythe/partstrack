@@ -15,6 +15,7 @@
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import contextlib
+import importlib.util
 import io
 import os
 import subprocess
@@ -22,10 +23,32 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from partstrack import __version__
 from partstrack.cli import build_parser, main
+from partstrack.labels import qr_matrix
 from partstrack.store import Inventory
+
+QR_COLOURS = "\033[30;107m"  # black on bright white
+RESET = "\033[0m"
+
+
+class TerminalOutput(io.StringIO):
+    def __init__(self, encoding="utf-8"):
+        super().__init__()
+        self._encoding = encoding
+
+    @property
+    def encoding(self):
+        return self._encoding
+
+    def write(self, text):
+        text.encode(self._encoding)  # fail like a real terminal that can't show it
+        return super().write(text)
+
+    def isatty(self):
+        return True
 
 
 class CliTest(unittest.TestCase):
@@ -68,6 +91,85 @@ class CommandTest(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             self.assertEqual(main(["--db", self.db, "token", "rm", "Pixel 8"]), 1)
         self.assertIn("no token 'Pixel 8'", err.getvalue())
+
+    def add_token_on_terminal(self, name, encoding="utf-8", colours=True):
+        out = TerminalOutput(encoding)
+        # The tests' own output is no console; test_colour_codes_are_used_only_if_the_console_takes_them asks one.
+        with contextlib.redirect_stdout(out), \
+                mock.patch("partstrack.cli._enable_terminal_colours", return_value=colours):
+            self.assertEqual(main(["--db", self.db, "token", "add", name]), 0)
+        output = out.getvalue()
+        token = next(word for word in output.split() if word.startswith("pt_"))
+        with Inventory(self.db) as inv:
+            self.assertEqual(inv.check_token(token).name, name)
+        return output, token
+
+    @unittest.skipUnless(importlib.util.find_spec("segno"), "needs the optional 'segno' package")
+    def test_new_token_is_shown_as_qr_code_on_a_terminal(self):
+        output, token = self.add_token_on_terminal("Pixel 8")
+        # Read the modules back: black ('▀' top, '▄' bottom, '█' both) on white, two rows per line.
+        lines = [line.removeprefix(QR_COLOURS).removesuffix(RESET) for line in output.splitlines()
+                 if line.startswith(QR_COLOURS)]
+        self.assertTrue(lines)
+        rows = []
+        for line in lines:
+            self.assertTrue(set(line) <= set(" ▀▄█"), line)
+            rows.append([c in "▀█" for c in line])
+            rows.append([c in "▄█" for c in line])
+        matrix = qr_matrix(token)
+        quiet = [False] * 4
+        expected = [[False] * (len(matrix) + 8)] * 4 + [quiet + row + quiet for row in matrix]
+        expected += [[False] * (len(matrix) + 8)] * (len(rows) - len(expected))
+        self.assertGreaterEqual(len(rows) - len(matrix), 8)  # a quiet zone of 4 rows at the bottom, too
+        self.assertEqual(rows, expected)
+        self.assertNotIn("\033", output.replace(QR_COLOURS, "").replace(RESET, ""))
+
+    def test_new_token_without_segno_or_terminal_is_only_text(self):
+        with mock.patch.dict(sys.modules, {"segno": None}):  # as if it weren't installed
+            output, token = self.add_token_on_terminal("Pixel 8")
+        self.assertIn(f"    {token}\n", output)
+        self.assertNotIn("\033", output)
+        self.assertNotIn("\033", self.run_cli("token", "add", "Pixel 9"))  # output isn't a terminal
+        for encoding in ("ascii", "cp1252"):  # e.g. LANG=C; the token is saved, so don't fail after it
+            with self.subTest(encoding=encoding):
+                output, token = self.add_token_on_terminal(f"Pixel {encoding}", encoding)
+                self.assertIn(f"    {token}\n", output)
+                self.assertNotIn("\033", output)
+        # e.g. a legacy Windows console, which would show the colour codes as text
+        output, token = self.add_token_on_terminal("Pixel legacy", colours=False)
+        self.assertIn(f"    {token}\n", output)
+        self.assertNotIn("\033", output)
+        self.assertNotIn("scan", output)
+
+    @unittest.skipUnless(os.name == "nt", "asks the Windows console")
+    def test_colour_codes_are_used_only_if_the_console_takes_them(self):
+        import ctypes
+
+        from partstrack.cli import _enable_terminal_colours
+
+        VT = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        cases = [  # GetConsoleMode result, current mode, SetConsoleMode result, expected
+            (0, 0, 1, False),   # not a console, e.g. NUL
+            (1, 3, 0, False),   # legacy console refuses
+            (1, 3, 1, True),
+            (1, 3 | VT, 0, True),  # already on: nothing to change
+        ]
+        for get_result, mode, set_result, expected in cases:
+            kernel32 = mock.Mock()
+
+            def get_console_mode(handle, pointer, mode=mode, result=get_result):
+                ctypes.cast(pointer, ctypes.POINTER(ctypes.c_ulong)).contents.value = mode
+                return result
+
+            kernel32.GetConsoleMode.side_effect = get_console_mode
+            kernel32.SetConsoleMode.return_value = set_result
+            with self.subTest(get=get_result, mode=mode, set=set_result), \
+                    mock.patch.object(ctypes, "windll", mock.Mock(kernel32=kernel32)):
+                self.assertIs(_enable_terminal_colours(), expected)
+                if get_result and not mode & VT:
+                    kernel32.SetConsoleMode.assert_called_once_with(kernel32.GetStdHandle.return_value, mode | VT)
+                else:
+                    kernel32.SetConsoleMode.assert_not_called()
 
     def test_minimum_low_stock_and_history(self):
         self.run_cli("add", "NE555", "-q", "20", "-l", "Drawer 3", "--min", "10")
