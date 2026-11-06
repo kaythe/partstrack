@@ -585,6 +585,19 @@ class TokenTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(InventoryError, message):
                 self.inv.create_token(name)
 
+    def test_last_used_is_written_at_most_once_a_minute(self):
+        # Every API write checks its token: a write per check would take the
+        # database lock twice per request.
+        token = self.inv.create_token("Phone")
+        self.inv.check_token(token)
+        writes = self.inv.conn.total_changes
+        self.inv.check_token(token)
+        self.assertEqual(self.inv.conn.total_changes, writes)
+        self.inv.conn.execute("UPDATE api_tokens SET last_used_at = datetime('now', '-2 minutes')")
+        self.inv.conn.commit()
+        self.inv.check_token(token)
+        self.assertEqual(self.inv.conn.total_changes, writes + 2)  # the old value updated again
+
     def test_read_only_copy_checks_without_writing(self):
         token = self.inv.create_token("Phone")
         with Inventory(self.inv.db_path, read_only=True) as copy:

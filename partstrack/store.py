@@ -1506,13 +1506,18 @@ class Inventory:
 
     def check_token(self, token: str) -> ApiToken | None:
         """The API token `token` is, or None if it isn't one (e.g. revoked).
-        Notes the time it was used, except in a read-only copy."""
+        Notes the time it was used, except in a read-only copy. That time is
+        kept to the minute, so most checks don't write: every API change
+        checks its token, and a write here would take the database lock twice."""
         row = self.conn.execute(
-            "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE hash = ?", (_token_hash(token),)
+            "SELECT id, name, created_at, last_used_at,"
+            " last_used_at IS NULL OR last_used_at < datetime('now', '-1 minute') AS stale"
+            " FROM api_tokens WHERE hash = ?",
+            (_token_hash(token),),
         ).fetchone()
         if row is None:
             return None
-        if not self.read_only:
+        if row["stale"] and not self.read_only:
             with self.transaction():
                 self.conn.execute("UPDATE api_tokens SET last_used_at = datetime('now') WHERE id = ?", (row["id"],))
         return ApiToken(row["id"], row["name"], row["created_at"], row["last_used_at"])
