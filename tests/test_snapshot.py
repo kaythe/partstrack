@@ -87,6 +87,24 @@ class SnapshotTest(unittest.TestCase):
             self.assertIsNone(copy.check_token(token))
         self.assertEqual(self.server.check_token(token).name, "Phone")  # the server keeps it
 
+    def test_snapshot_leaves_out_revoked_tokens(self):
+        # Revoking leaves the row's bytes in free space of the server's database,
+        # which the backup copies page by page. (Unless SQLite was built to
+        # overwrite deleted data, as Debian's is; most others aren't.)
+        self.server.conn.execute("PRAGMA secure_delete = OFF")
+        names = [f"Old phone {i}" for i in range(40)]  # more than one page of tokens
+        for name in names:
+            self.server.create_token(name)
+        hashes = [r[0] for r in self.server.conn.execute("SELECT hash FROM api_tokens")]
+        for name in names:
+            self.server.revoke_token(name)
+        server_data = self.server.db_path.read_bytes()
+        self.assertTrue(any(h.encode() in server_data for h in hashes))  # still on the server's disk
+        with tarfile.open(self.snapshot()) as tar:
+            data = tar.extractfile("parts.db").read()
+        self.assertEqual([h for h in hashes if h.encode() in data], [])
+        self.assertFalse(b"Old phone" in data)
+
     def test_attachment_deleted_during_the_snapshot_is_left_out(self):
         attachment = self.server.get_part(self.part_id).attachments[0]
         add = tarfile.TarFile.add
