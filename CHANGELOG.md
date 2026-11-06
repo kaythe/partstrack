@@ -7,11 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-06
+
 ### Added
 
 - `/api/token` checks an API token without changing anything: it answers with
   the token's name and whether the server can save changes, or 401 if the
   token isn't valid. Apps can use it to test a token when it is entered.
+
+### Fixed
+
+- A file that can't be opened as an inventory (because it isn't a database or
+  was made by a newer version of partstrack) is no longer left open. On
+  Windows it stayed locked, so it couldn't be deleted or replaced, and a
+  refused copy from a newer server left a temporary folder behind.
+- On Windows, the CLI no longer reports `error: Invalid argument` when the
+  program reading its output stops early (`partstrack list | more`).
 
 ## [1.3.0] - 2026-11-06
 
@@ -255,7 +266,8 @@ First release.
 - Light/dark theme switch in the web interface, with an "Auto" setting that
   follows the device.
 
-[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/kaythe/partstrack/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/kaythe/partstrack/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/kaythe/partstrack/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/kaythe/partstrack/compare/v1.1.1...v1.2.0
