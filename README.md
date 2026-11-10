@@ -13,6 +13,11 @@ The command-line app uses only the Python standard library (Python 3.10+). The
 optional web interface needs Flask and waitress, and the optional desktop app
 needs PySide6 (Qt).
 
+partstrack now has an 
+[Android companion app](https://github.com/kaythe/partstrack-android) 
+that uses the REST API to display, edit and add parts on a partstrack 
+[server](#web-interface)!
+
 ## Screenshots
 
 The [web interface](#web-interface), for use from any browser on your network:
