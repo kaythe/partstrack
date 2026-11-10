@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-10
+
 ### Added
 
 - `partstrack token add` also shows the new token as a QR code in the
@@ -273,7 +275,8 @@ First release.
 - Light/dark theme switch in the web interface, with an "Auto" setting that
   follows the device.
 
-[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/kaythe/partstrack/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/kaythe/partstrack/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/kaythe/partstrack/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/kaythe/partstrack/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/kaythe/partstrack/compare/v1.2.0...v1.2.1
